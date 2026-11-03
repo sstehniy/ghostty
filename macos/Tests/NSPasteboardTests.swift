@@ -338,3 +338,36 @@ struct NSPasteboardGhosttyTests {
         #expect(NSPasteboard.ghostty(unknown) == nil)
     }
 }
+
+/// Tests for `NSPasteboard.ghosttyHasImageData`, which decides whether a paste
+/// with no text is forwarded to the running program as Ctrl+V.
+struct NSPasteboardImageDataTests {
+    @Test func testPNGIsImageData() {
+        let pasteboard = makePasteboard()
+        pasteboard.setData(Data([0x89, 0x50, 0x4E, 0x47]), forType: .png)
+        #expect(pasteboard.ghosttyHasImageData)
+    }
+
+    @Test func testTIFFIsImageData() {
+        let pasteboard = makePasteboard()
+        pasteboard.setData(Data([0x4D, 0x4D, 0x00, 0x2A]), forType: .tiff)
+        #expect(pasteboard.ghosttyHasImageData)
+    }
+
+    @Test func testTextIsNotImageData() {
+        let pasteboard = makePasteboard()
+        pasteboard.writeObjects([stringItem("hello")])
+        #expect(!pasteboard.ghosttyHasImageData)
+    }
+
+    @Test func testCopiedImageFileIsNotImageData() {
+        // A file copied in Finder pastes as its path, so it isn't image data.
+        let pasteboard = makePasteboard()
+        pasteboard.writeObjects([fileURLItem("file:///Users/test/screenshot.png")])
+        #expect(!pasteboard.ghosttyHasImageData)
+    }
+
+    @Test func testEmptyPasteboardIsNotImageData() {
+        #expect(!makePasteboard().ghosttyHasImageData)
+    }
+}

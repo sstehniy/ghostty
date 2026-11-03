@@ -93,6 +93,15 @@ extension Ghostty {
             }
         }
 
+        /// Send Ctrl+V for a paste whose clipboard holds an image but no text.
+        /// Terminal programs such as Claude Code and Codex treat Ctrl+V as "attach
+        /// the image on the system clipboard", which they read themselves since a
+        /// terminal paste can only carry text. The core skips keybindings, so a
+        /// Ctrl+V paste binding can't loop, and sends the logical V on any layout.
+        func sendImagePasteKey() {
+            ghostty_surface_send_image_paste_key(surface)
+        }
+
         /// Check if a key event matches a keybinding.
         ///
         /// This checks whether the given key event would trigger a keybinding in the terminal.

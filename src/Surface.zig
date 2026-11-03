@@ -3396,6 +3396,37 @@ fn encodeKey(
     return write_req;
 }
 
+/// Send Ctrl+V to the pty as if typed, for a paste whose clipboard holds an
+/// image but no text. Programs such as Claude Code and Codex read the image
+/// from the system clipboard themselves when they receive Ctrl+V.
+///
+/// Keybindings are deliberately skipped: a binding on Ctrl+V (e.g. to paste)
+/// would otherwise start another paste and loop. The key is the logical V
+/// regardless of keyboard layout, and is encoded for the terminal's current
+/// keyboard modes (legacy or Kitty).
+pub fn sendImagePasteKey(self: *Surface) !void {
+    for ([_]input.Action{ .press, .release }) |action| {
+        const write_req = try self.encodeKey(imagePasteKeyEvent(action), null) orelse continue;
+        self.queueIo(switch (write_req) {
+            .small => |v| .{ .write_small = v },
+            .stable => |v| .{ .write_stable = v },
+            .alloc => |v| .{ .write_alloc = v },
+        }, .unlocked);
+    }
+}
+
+/// The Ctrl+V key event sent by `sendImagePasteKey`. The unshifted codepoint
+/// makes it the logical V; the physical key only matters for protocols that
+/// report it alongside, where V's usual position is the best guess.
+fn imagePasteKeyEvent(action: input.Action) input.KeyEvent {
+    return .{
+        .action = action,
+        .key = .key_v,
+        .mods = .{ .ctrl = true },
+        .unshifted_codepoint = 'v',
+    };
+}
+
 fn encodeKeyOpts(self: *const Surface) input.key_encode.Options {
     self.renderer_state.mutex.lockUncancelable(global.io());
     defer self.renderer_state.mutex.unlock(global.io());
@@ -6692,6 +6723,36 @@ test "queueIo frees allocated writes in readonly mode" {
         .alloc = testing.allocator,
         .data = data,
     } }, .unlocked);
+}
+
+test "imagePasteKeyEvent encodes as Ctrl+V" {
+    const testing = std.testing;
+
+    // Legacy encoding: the C0 control character.
+    {
+        var buf: [32]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buf);
+        try input.key_encode.encode(&writer, imagePasteKeyEvent(.press), .{});
+        try testing.expectEqualStrings("\x16", writer.buffered());
+    }
+
+    // Legacy encoding sends nothing on release.
+    {
+        var buf: [32]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buf);
+        try input.key_encode.encode(&writer, imagePasteKeyEvent(.release), .{});
+        try testing.expectEqualStrings("", writer.buffered());
+    }
+
+    // Kitty keyboard protocol: the logical "v" with the ctrl modifier.
+    {
+        var buf: [32]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buf);
+        try input.key_encode.encode(&writer, imagePasteKeyEvent(.press), .{
+            .kitty_flags = .{ .disambiguate = true },
+        });
+        try testing.expectEqualStrings("\x1b[118;5u", writer.buffered());
+    }
 }
 
 test "Mouse.click_state holds every button" {

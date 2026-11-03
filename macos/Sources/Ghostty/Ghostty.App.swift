@@ -333,6 +333,20 @@ extension Ghostty {
             // With nothing to serve and no listing requested there is
             // nothing to complete the read with.
             if contents.isEmpty && !list {
+                if shouldForwardImagePaste(location: location, pasteboard: pasteboard, state: state) {
+                    // A paste can only carry text, so programs that accept images
+                    // (Claude Code, Codex, ...) read them from the clipboard
+                    // themselves when they receive Ctrl+V. Hand the paste over as
+                    // that key. The read is answered here and reported as started
+                    // so the paste binding consumes Cmd+V. The key is sent on the
+                    // next turn to avoid re-entering the core mid-action.
+                    ghostty_surface_deny_clipboard_request(surface, state)
+                    DispatchQueue.main.async { [weak surfaceView] in
+                        surfaceView?.surfaceModel?.sendImagePasteKey()
+                    }
+                    return GHOSTTY_CLIPBOARD_READ_STARTED
+                }
+
                 return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE
             }
 
@@ -342,6 +356,20 @@ extension Ghostty {
                 available: available,
                 state: state)
             return GHOSTTY_CLIPBOARD_READ_STARTED
+        }
+
+        /// Whether a read with no text to serve should be forwarded as an image paste
+        /// key. Only a user's paste from the standard clipboard qualifies; programs
+        /// reading the clipboard (OSC 52, the Kitty protocol) never trigger it.
+        private static func shouldForwardImagePaste(
+            location: ghostty_clipboard_e,
+            pasteboard: NSPasteboard,
+            state: UnsafeMutableRawPointer
+        ) -> Bool {
+            guard location == GHOSTTY_CLIPBOARD_STANDARD,
+                  Ghostty.ClipboardRequest.from(request: ghostty_clipboard_request_type(state)) == .paste
+            else { return false }
+            return pasteboard.ghosttyHasImageData
         }
 
         static func confirmReadClipboard(

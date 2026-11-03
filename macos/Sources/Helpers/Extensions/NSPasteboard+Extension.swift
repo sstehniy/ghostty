@@ -54,6 +54,15 @@ extension NSPasteboard {
         return strings.joined(separator: " ")
     }
 
+    /// Whether the pasteboard holds image data, e.g. a screenshot copied to the
+    /// clipboard. An image file copied in Finder is a file URL instead and pastes
+    /// as its path.
+    var ghosttyHasImageData: Bool {
+        (types ?? []).contains { type in
+            UTType(type.rawValue)?.conforms(to: .image) == true
+        }
+    }
+
     /// The file URLs on the pasteboard, e.g. files copied in Finder.
     private var ghosttyFileURLs: [URL] {
         (pasteboardItems ?? []).compactMap { item in

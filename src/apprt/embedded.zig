@@ -2335,6 +2335,27 @@ pub const CAPI = struct {
         ptr.completeClipboardRequest(complete, state);
     }
 
+    /// Send Ctrl+V to the terminal for a paste whose clipboard holds an
+    /// image but no text, so programs that read clipboard images (e.g.
+    /// Claude Code, Codex) can attach it. Keybindings are skipped and the
+    /// key is the logical V regardless of keyboard layout.
+    export fn ghostty_surface_send_image_paste_key(ptr: *Surface) void {
+        ptr.core_surface.sendImagePasteKey() catch |err| {
+            log.warn("error sending image paste key err={}", .{err});
+        };
+    }
+
+    /// The type of a clipboard request passed to the read clipboard
+    /// callback. Lets the embedder tell a user's paste apart from a
+    /// program reading the clipboard, which ask for the same MIME types.
+    /// The request pointer must still be valid, i.e. not yet completed
+    /// or denied.
+    export fn ghostty_clipboard_request_type(
+        state: *const apprt.ClipboardRequest,
+    ) c_int {
+        return @backingInt(std.meta.activeTag(state.*));
+    }
+
     /// Deny a clipboard read request started via the read callback,
     /// e.g. because the user rejected a confirmation prompt. Request
     /// types whose protocol expects an answer have their denial reply
