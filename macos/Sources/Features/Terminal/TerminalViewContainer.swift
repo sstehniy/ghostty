@@ -4,11 +4,14 @@ import SwiftUI
 /// Use this container to achieve a glass effect at the window level.
 /// Modifying `NSThemeFrame` can sometimes be unpredictable.
 class TerminalViewContainer: NSView {
-    private let terminalView: NSView
+    private let terminalView = NSView()
+    private let terminalHostingView: NSView
 
     /// The optional tab sidebar placed on the leading edge, beside the terminal.
     private(set) var sidebarView: TerminalTabSidebarHostView?
     private var sidebarWidthConstraint: NSLayoutConstraint?
+    private var sidebarLeadingConstraint: NSLayoutConstraint?
+    private var sidebarTransitionID = 0
     private var terminalLeadingConstraint: NSLayoutConstraint!
 
     /// The narrowest the terminal is allowed to become because of the sidebar.
@@ -31,7 +34,7 @@ class TerminalViewContainer: NSView {
     }
 
     init<Root: View>(@ViewBuilder rootView: () -> Root) {
-        self.terminalView = NSHostingView(rootView: rootView())
+        self.terminalHostingView = NSHostingView(rootView: rootView())
         super.init(frame: .zero)
         setup()
     }
@@ -48,7 +51,7 @@ class TerminalViewContainer: NSView {
     var initialContentSize: NSSize?
 
     override var intrinsicContentSize: NSSize {
-        let hostingSize = terminalView.intrinsicContentSize
+        let hostingSize = terminalHostingView.intrinsicContentSize
         // The hosting view returns a valid size once SwiftUI has laid out
         // with the correct idealWidth/idealHeight. Before that (when
         // @FocusedValue hasn't propagated), it returns a tiny default.
@@ -78,6 +81,16 @@ class TerminalViewContainer: NSView {
     var glassEffectDidChange: (() -> Void)?
 
     private func setup() {
+        wantsLayer = true
+        // Animate an AppKit parent because NSHostingView manages its own layer geometry.
+        terminalView.addSubview(terminalHostingView)
+        terminalHostingView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            terminalHostingView.topAnchor.constraint(equalTo: terminalView.topAnchor),
+            terminalHostingView.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor),
+            terminalHostingView.bottomAnchor.constraint(equalTo: terminalView.bottomAnchor),
+            terminalHostingView.trailingAnchor.constraint(equalTo: terminalView.trailingAnchor),
+        ])
         addSubview(terminalView)
         terminalView.translatesAutoresizingMaskIntoConstraints = false
         terminalLeadingConstraint = terminalView.leadingAnchor.constraint(equalTo: leadingAnchor)
@@ -99,18 +112,59 @@ class TerminalViewContainer: NSView {
         addSubview(sidebar, positioned: .above, relativeTo: terminalView)
         let width = sidebar.widthAnchor.constraint(equalToConstant: 0)
         sidebarWidthConstraint = width
+        let leading = sidebar.leadingAnchor.constraint(equalTo: leadingAnchor)
+        sidebarLeadingConstraint = leading
 
         terminalLeadingConstraint.isActive = false
         terminalLeadingConstraint = terminalView.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor)
         NSLayoutConstraint.activate([
             sidebar.topAnchor.constraint(equalTo: topAnchor),
             sidebar.bottomAnchor.constraint(equalTo: bottomAnchor),
-            sidebar.leadingAnchor.constraint(equalTo: leadingAnchor),
+            leading,
             width,
             terminalLeadingConstraint,
         ])
 
+        setSidebarVisible(sidebar.isShown)
+    }
+
+    func setSidebarVisible(_ visible: Bool, animated: Bool = false) {
+        guard let sidebarView else { return }
+        let shouldAnimate = animated && sidebarView.isShown != visible && window?.isVisible == true
+            && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+
+        layoutSubtreeIfNeeded()
+        let currentEdge = sidebarView.layer?.presentation()?.frame.maxX ?? sidebarView.frame.maxX
+        sidebarView.isShown = visible
+        sidebarView.isHidden = false
+        sidebarTransitionID += 1
+        let transitionID = sidebarTransitionID
         sidebarLayoutDidChange()
+        layoutSubtreeIfNeeded()
+
+        let animationKey = "sidebarVisibility"
+        guard shouldAnimate else {
+            sidebarView.layer?.removeAnimation(forKey: animationKey)
+            terminalView.layer?.removeAnimation(forKey: animationKey)
+            sidebarView.isHidden = !visible
+            return
+        }
+
+        // Slide both parents equally after SwiftUI finishes resizing their contents.
+        let animation = CABasicAnimation(keyPath: "transform.translation.x")
+        animation.fromValue = currentEdge - sidebarView.frame.maxX
+        animation.toValue = 0
+        animation.duration = 0.2
+        animation.timingFunction = .init(name: .easeInEaseOut)
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in
+            guard let self, self.sidebarTransitionID == transitionID else { return }
+            sidebarView.isHidden = !sidebarView.isShown
+        }
+        sidebarView.layer?.add(animation, forKey: animationKey)
+        terminalView.layer?.add(animation, forKey: animationKey)
+        CATransaction.commit()
     }
 
     /// Call when sidebar visibility or width changed.
@@ -130,15 +184,15 @@ class TerminalViewContainer: NSView {
     }
 
     private func updateSidebarWidth() {
-        guard let sidebarView, let sidebarWidthConstraint else { return }
-        let visible = sidebarView.isShown
-        sidebarView.isHidden = !visible
-
-        let width = visible
-            ? Self.effectiveSidebarWidth(preferred: sidebarView.preferredWidth, containerWidth: bounds.width)
-            : 0
+        guard let sidebarView, let sidebarWidthConstraint, let sidebarLeadingConstraint else { return }
+        // Keep rows at their full width while the sidebar slides beyond the window edge.
+        let width = Self.effectiveSidebarWidth(preferred: sidebarView.preferredWidth, containerWidth: bounds.width)
         if sidebarWidthConstraint.constant != width {
             sidebarWidthConstraint.constant = width
+        }
+        let leading: CGFloat = sidebarView.isShown ? 0 : -width
+        if sidebarLeadingConstraint.constant != leading {
+            sidebarLeadingConstraint.constant = leading
         }
     }
 

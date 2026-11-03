@@ -1973,9 +1973,8 @@ extension TerminalController {
         // as the view containing it is hidden.
         let sidebarHadFocus = sidebarHost.containsFirstResponder
 
-        sidebarHost.isShown = visible
         (window as? TerminalWindow)?.hidesNativeTabBar = visible
-        terminalViewContainer?.sidebarLayoutDidChange()
+        terminalViewContainer?.setSidebarVisible(visible, animated: true)
 
         // Never leave keyboard focus in a hidden sidebar.
         if !visible, let window, sidebarHadFocus || window.firstResponder === window,

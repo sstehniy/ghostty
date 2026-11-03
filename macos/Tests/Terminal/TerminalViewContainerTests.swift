@@ -46,6 +46,49 @@ class MockConfig: Ghostty.Config {
 }
 
 struct TerminalViewContainerTests {
+    @MainActor @Test func sidebarTransitionsPreserveLayout() async throws {
+        let appDelegate = try #require(NSApp.delegate as? AppDelegate)
+        let controller = TerminalController(appDelegate.ghostty, withSurfaceTree: .init())
+        let model = TerminalTabSidebarModel(configuredLayout: .horizontal)
+        let sidebar = TerminalTabSidebarHostView(model: model, actions: controller)
+        sidebar.preferredWidth = 280
+        let container = TerminalViewContainer { EmptyView() }
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 500),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = container
+        container.installSidebar(sidebar)
+        window.orderFront(nil)
+        container.layoutSubtreeIfNeeded()
+        let terminal = try #require(container.subviews.first { $0 !== sidebar })
+
+        container.setSidebarVisible(true)
+        #expect(sidebar.frame.width == 280)
+        #expect(terminal.frame.minX == 280)
+
+        // Rapid toggles must settle on the last requested layout.
+        container.setSidebarVisible(false, animated: true)
+        try await Task.sleep(for: .milliseconds(50))
+        let sidebarFrame = try #require(sidebar.layer?.presentation()).frame
+        let terminalFrame = try #require(terminal.layer?.presentation()).frame
+        #expect(abs(sidebarFrame.maxX - terminalFrame.minX) < 1)
+        container.setSidebarVisible(true, animated: true)
+        try await Task.sleep(for: .milliseconds(50))
+        container.setSidebarVisible(false, animated: true)
+        try await Task.sleep(for: .milliseconds(350))
+        #expect(sidebar.isHidden)
+        #expect(sidebar.frame.width == 280)
+        #expect(terminal.frame.minX == 0)
+
+        container.setSidebarVisible(true, animated: true)
+        try await Task.sleep(for: .milliseconds(350))
+        #expect(!sidebar.isHidden)
+        #expect(sidebar.frame.width == 280)
+        #expect(terminal.frame.minX == 280)
+    }
+
     @Test func glassAvailability() async throws {
         let view = await MockTerminalViewContainer {
             EmptyView()
