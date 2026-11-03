@@ -61,6 +61,18 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// The notification cancellable for focused surface property changes.
     private var surfaceAppearanceCancellables: Set<AnyCancellable> = []
 
+    /// The tab sidebar state, shared by every tab in this window's tab group.
+    private(set) var sidebarModel: TerminalTabSidebarModel
+
+    /// The tab sidebar view. Nil for window styles that don't support tabs.
+    private var sidebarHost: TerminalTabSidebarHostView?
+
+    /// The terminal background last applied to the sidebar.
+    private var sidebarBackgroundColor: NSColor?
+
+    /// Subscriptions to the current `sidebarModel`.
+    private var sidebarModelCancellables: Set<AnyCancellable> = []
+
     init(_ ghostty: Ghostty.App,
          withBaseConfig base: Ghostty.SurfaceConfiguration? = nil,
          withSurfaceTree tree: SplitTree<Ghostty.SurfaceView>? = nil,
@@ -75,6 +87,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         // Setup our initial derived config based on the current app config
         self.derivedConfig = DerivedConfig(ghostty.config)
+
+        // New window groups start from the configured or last-used tab layout.
+        self.sidebarModel = TerminalTabSidebarModel(configuredLayout: ghostty.config.macosTabLayout)
 
         super.init(ghostty, baseConfig: base, surfaceTree: tree)
 
@@ -131,6 +146,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             self,
             selector: #selector(onCloseWindow),
             name: .ghosttyCloseWindow,
+            object: nil
+        )
+        center.addObserver(
+            self,
+            selector: #selector(onSidebarMembershipDidChange),
+            name: TerminalTabSidebarModel.membershipDidChange,
             object: nil
         )
     }
@@ -369,7 +390,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             if let window = c.window {
                 // If we have a tree size, resize the window's content to match
                 if let treeSize, treeSize.width > 0, treeSize.height > 0 {
-                    window.setContentSize(treeSize)
+                    // Keep the moved panes' size; a visible sidebar adds to the window.
+                    let contentSize = c.terminalViewContainer?.contentSize(fittingTerminal: treeSize) ?? treeSize
+                    window.setContentSize(contentSize)
                     window.constrainToScreen()
                 }
 
@@ -444,6 +467,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // Create a new window and add it to the parent
         let controller = TerminalController.init(ghostty, withBaseConfig: baseConfig)
         controller.isBackgroundOpaque = parentController.isBackgroundOpaque
+
+        // Join the parent's sidebar state before the first frame so the new tab
+        // doesn't briefly show a different tab layout.
+        controller.attachSidebarModel(parentController.sidebarModel)
+
         guard let window = controller.window else { return controller }
 
         // If the parent is miniaturized, then macOS exhibits really strange behaviors
@@ -595,9 +623,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     func relabelTabs() {
         // We only listen for frame changes if we have more than 1 window,
         // otherwise the accessory view doesn't matter.
-        tabListenForFrame = window?.tabbedWindows?.count ?? 0 > 1
+        // Use the tab group for membership: `tabbedWindows` describes the visible
+        // tab bar, which may be hidden while the tab sidebar is shown.
+        tabListenForFrame = window?.tabGroup?.windows.count ?? 0 > 1
 
-        if let windows = window?.tabbedWindows as? [TerminalWindow] {
+        if let windows = window?.tabGroup?.windows.compactMap({ $0 as? TerminalWindow }) {
             for (tab, window) in zip(1..., windows) {
                 // We need to clear any windows beyond this because they have had
                 // a keyEquivalent set previously.
@@ -636,7 +666,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // for the view frame to change, comparing the windows list, and
         // relabeling the tabs.
         guard tabListenForFrame else { return }
-        guard let v = self.window?.tabbedWindows?.hashValue else { return }
+        guard let v = self.window?.tabGroup?.windows.hashValue else { return }
         guard tabWindowsHash != v else { return }
         tabWindowsHash = v
         self.relabelTabs()
@@ -666,6 +696,20 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // Call this last in case it uses any of the properties above.
         window.syncAppearance(surfaceConfig)
         terminalViewContainer?.ghosttyConfigDidChange(ghostty.config, preferredBackgroundColor: window.preferredBackgroundColor)
+
+        // The sidebar follows the terminal's current background.
+        sidebarBackgroundColor = window.preferredBackgroundColor ?? NSColor(surfaceConfig.backgroundColor)
+        syncSidebarAppearance()
+    }
+
+    /// Apply the terminal background to the sidebar. Also called when the glass view
+    /// is removed after a deferred config update, so the sidebar doesn't stay clear.
+    func syncSidebarAppearance() {
+        guard let sidebarHost, let window, let sidebarBackgroundColor else { return }
+        sidebarHost.updateAppearance(
+            backgroundColor: sidebarBackgroundColor,
+            opaque: window.isOpaque,
+            glass: terminalViewContainer?.glassEffectView != nil)
     }
 
     /// Adjusts the given frame for the configured window position.
@@ -1032,6 +1076,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     convenience init(_ ghostty: Ghostty.App, with undoState: UndoState) {
         self.init(ghostty, withSurfaceTree: undoState.surfaceTree)
 
+        // Rejoin the original group's sidebar state, if it is still open.
+        if let tabGroup = undoState.tabGroup,
+           let model = TerminalTabSidebarModel.registered(for: tabGroup) {
+            attachSidebarModel(model)
+        }
+
         // Show the window and restore its frame
         showWindow(nil)
         if let window {
@@ -1125,6 +1175,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         window.contentView = container
 
+        // The tab sidebar lives beside the terminal in the same container so it
+        // shares the terminal background and glass handling.
+        installSidebarIfSupported(in: container)
+
         // If we have a default size, we want to apply it.
         if let defaultSize {
             defaultSize.apply(to: window)
@@ -1200,6 +1254,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         super.showWindow(sender)
 
         syncAppearance()
+
+        // Join the tab group's sidebar state now that AppKit has placed the window.
+        reconnectSidebarModel()
     }
 
     // Shows the "+" button in the tab bar, responds to that click.
@@ -1268,6 +1325,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         super.windowDidBecomeKey(notification)
         self.relabelTabs()
         self.fixTabBar()
+        reconnectSidebarModel()
     }
 
     override func windowDidMove(_ notification: Notification) {
@@ -1300,6 +1358,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         // Remember our last main
         Self.lastMain = self
+
+        reconnectSidebarModel()
+        sidebarModel.refreshSelection()
     }
 
     // Called when the window will be encoded. We handle the data encoding here in the
@@ -1554,11 +1615,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         guard action.amount != 0 else { return }
 
         // Determine our current selected index
-        guard let windowController = window.windowController else { return }
-        guard let tabGroup = windowController.window?.tabGroup else { return }
+        guard let tabGroup = window.tabGroup else { return }
         guard let selectedWindow = tabGroup.selectedWindow else { return }
         let tabbedWindows = tabGroup.windows
-        guard tabbedWindows.count > 0 else { return }
         guard let selectedIndex = tabbedWindows.firstIndex(where: { $0 == selectedWindow }) else { return }
 
         // Determine the final index we want to insert our tab
@@ -1570,8 +1629,25 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             finalIndex = selectedIndex + min(remaining, action.amount)
         }
 
+        Self.moveTab(selectedWindow, to: finalIndex)
+    }
+
+    /// Moves a tab within its tab group so it ends up at `finalIndex` in the group's
+    /// order. This is the single implementation for keyboard tab moves and sidebar
+    /// drag reordering so both retain the AppKit workarounds below.
+    static func moveTab(_ movingWindow: NSWindow, to requestedIndex: Int) {
+        guard let tabGroup = movingWindow.tabGroup else { return }
+        let tabbedWindows = tabGroup.windows
+        guard tabbedWindows.count > 1,
+              let currentIndex = tabbedWindows.firstIndex(of: movingWindow) else { return }
+
+        let finalIndex = min(max(requestedIndex, 0), tabbedWindows.count - 1)
+
         // If our index is the same we do nothing
-        guard finalIndex != selectedIndex else { return }
+        guard finalIndex != currentIndex else { return }
+
+        let selectedWindow = tabGroup.selectedWindow
+        let movingLeft = finalIndex < currentIndex
 
         // Get our target window
         let targetWindow = tabbedWindows[finalIndex]
@@ -1582,19 +1658,19 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         //
         // Reproduction: titlebar tabs, create two tabs, "move tab left"
         if #available(macOS 26, *) {
-            if window is TitlebarTabsTahoeTerminalWindow {
+            if movingWindow is TitlebarTabsTahoeTerminalWindow, movingWindow == selectedWindow {
                 // Move the tabs we pass over to the other side of our tab
                 // instead of moving our tab: removing the selected tab makes
                 // AppKit briefly show a neighbor.
-                if action.amount < 0 {
-                    for passed in tabbedWindows[finalIndex..<selectedIndex].reversed() {
+                if movingLeft {
+                    for passed in tabbedWindows[finalIndex..<currentIndex].reversed() {
                         tabGroup.removeWindow(passed)
-                        selectedWindow.addTabbedWindowSafely(passed, ordered: .above)
+                        movingWindow.addTabbedWindowSafely(passed, ordered: .above)
                     }
                 } else {
-                    for passed in tabbedWindows[(selectedIndex + 1)...finalIndex] {
+                    for passed in tabbedWindows[(currentIndex + 1)...finalIndex] {
                         tabGroup.removeWindow(passed)
-                        selectedWindow.addTabbedWindowSafely(passed, ordered: .below)
+                        movingWindow.addTabbedWindowSafely(passed, ordered: .below)
                     }
                 }
 
@@ -1607,11 +1683,17 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         NSAnimationContext.current.duration = 0
 
         // Remove and re-add the window in the correct position
-        tabGroup.removeWindow(selectedWindow)
-        targetWindow.addTabbedWindowSafely(selectedWindow, ordered: action.amount < 0 ? .below : .above)
+        tabGroup.removeWindow(movingWindow)
+        targetWindow.addTabbedWindowSafely(movingWindow, ordered: movingLeft ? .below : .above)
 
-        // Ensure our window remains selected
-        selectedWindow.makeKey()
+        // Ensure the previously selected window remains selected
+        if let selectedWindow {
+            if selectedWindow == movingWindow {
+                selectedWindow.makeKey()
+            } else if tabGroup.selectedWindow != selectedWindow {
+                tabGroup.selectedWindow = selectedWindow
+            }
+        }
 
         NSAnimationContext.endGrouping()
     }
@@ -1748,6 +1830,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 extension TerminalController {
     override func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
+        case #selector(toggleTabSidebar):
+            return validateTabSidebarMenuItem(item)
+
         case #selector(closeTabsOnTheRight):
             guard let window, let tabGroup = window.tabGroup else { return false }
             guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return false }
@@ -1828,5 +1913,225 @@ extension TerminalController {
         } else {
             return nil
         }
+    }
+}
+
+// MARK: Tab Sidebar
+
+extension TerminalController {
+    /// Whether this window can show the tab sidebar. Styles that disallow tabbing
+    /// (hidden titlebar) don't have tabs to show.
+    var supportsTabSidebar: Bool {
+        guard let window = window as? TerminalWindow else { return false }
+        return window.tabbingMode != .disallowed && derivedConfig.macosTitlebarStyle != .hidden
+    }
+
+    fileprivate func installSidebarIfSupported(in container: TerminalViewContainer) {
+        guard sidebarHost == nil, supportsTabSidebar, let window else { return }
+
+        let host = TerminalTabSidebarHostView(model: sidebarModel, actions: self)
+        sidebarHost = host
+        container.installSidebar(host)
+        container.glassEffectDidChange = { [weak self] in self?.syncSidebarAppearance() }
+
+        // Until AppKit places this window in a tab group, show its own row.
+        if sidebarModel.tabGroup == nil {
+            sidebarModel.provisionalWindow = window
+        }
+        attachSidebarModel(sidebarModel, force: true)
+    }
+
+    /// Use the given group state for this tab and keep the window in sync with it.
+    func attachSidebarModel(_ model: TerminalTabSidebarModel, force: Bool = false) {
+        guard force || model !== sidebarModel else { return }
+        sidebarModel = model
+        sidebarModelCancellables.removeAll()
+        guard let sidebarHost else { return }
+        sidebarHost.setModel(model)
+
+        // Apply synchronously with the delivered values. `@Published` delivers before
+        // storing, so the model's properties must not be read here. Deferring this
+        // instead lets AppKit attach a visible tab bar to a new tab before it is
+        // hidden, which flickers horizontal tabs in the titlebar.
+        model.$isVisible
+            .removeDuplicates()
+            .sink { [weak self] visible in self?.applySidebarVisibility(visible) }
+            .store(in: &sidebarModelCancellables)
+        model.$width
+            .removeDuplicates()
+            .sink { [weak self] width in
+                self?.sidebarHost?.preferredWidth = width
+                self?.terminalViewContainer?.sidebarLayoutDidChange()
+            }
+            .store(in: &sidebarModelCancellables)
+    }
+
+    private func applySidebarVisibility(_ visible: Bool) {
+        guard let sidebarHost else { return }
+
+        // Check before hiding: AppKit moves first responder to the window as soon
+        // as the view containing it is hidden.
+        let sidebarHadFocus = sidebarHost.containsFirstResponder
+
+        sidebarHost.isShown = visible
+        (window as? TerminalWindow)?.hidesNativeTabBar = visible
+        terminalViewContainer?.sidebarLayoutDidChange()
+
+        // Never leave keyboard focus in a hidden sidebar.
+        if !visible, let window, sidebarHadFocus || window.firstResponder === window,
+           let focusedSurface {
+            window.makeFirstResponder(focusedSurface)
+        }
+    }
+
+    /// Ensures this tab uses the sidebar state of the tab group it currently belongs
+    /// to. Called when tab membership changes, since tabs can move between windows.
+    func reconnectSidebarModel() {
+        guard sidebarHost != nil, let group = window?.tabGroup else { return }
+
+        if sidebarModel.tabGroup === group {
+            sidebarModel.refresh()
+            return
+        }
+
+        if let existing = TerminalTabSidebarModel.registered(for: group) {
+            attachSidebarModel(existing)
+            existing.refresh()
+            return
+        }
+
+        // This tab starts a new group: keep its state when it was never bound,
+        // otherwise continue the old group's state in the new window.
+        let model = sidebarModel.tabGroup == nil
+            ? sidebarModel
+            : TerminalTabSidebarModel(continuing: sidebarModel)
+        model.bind(to: group)
+        attachSidebarModel(model)
+    }
+
+    @objc fileprivate func onSidebarMembershipDidChange(_ notification: Notification) {
+        reconnectSidebarModel()
+
+        // Reordering without the visible tab bar produces no frame changes, so
+        // relabel shortcuts here as well.
+        if let model = notification.object as? TerminalTabSidebarModel, model === sidebarModel,
+           window?.isKeyWindow ?? false {
+            relabelTabs()
+        }
+    }
+
+    // MARK: Actions
+
+    /// Toggles between the tab sidebar (vertical tabs) and the native tab bar for
+    /// this window's tab group.
+    @IBAction func toggleTabSidebar(_ sender: Any?) {
+        guard supportsTabSidebar, sidebarHost != nil else { return }
+        reconnectSidebarModel()
+        sidebarModel.setVisible(!sidebarModel.isVisible, persist: true)
+    }
+
+    /// Validation for the sidebar toggle. Also updates the Show/Hide title.
+    fileprivate func validateTabSidebarMenuItem(_ item: NSMenuItem) -> Bool {
+        let visible = sidebarHost != nil && sidebarModel.isVisible
+        item.title = visible ? "Hide Sidebar" : "Show Sidebar"
+        return supportsTabSidebar && sidebarHost != nil
+    }
+}
+
+extension TerminalController: TerminalTabSidebarActions {
+    private func controller(for window: NSWindow) -> TerminalController? {
+        window.windowController as? TerminalController
+    }
+
+    /// Runs an action that may present a sheet on the target tab. Sheets on an
+    /// unselected tab would be invisible, so the tab is selected first.
+    private func performShowingTab(_ window: NSWindow, needsVisibleTab: Bool, _ action: @escaping () -> Void) {
+        guard needsVisibleTab, window.tabGroup?.selectedWindow != window else {
+            action()
+            return
+        }
+
+        window.makeKeyAndOrderFront(nil)
+        DispatchQueue.main.async(execute: action)
+    }
+
+    private static func needsCloseConfirmation(_ windows: [NSWindow]) -> Bool {
+        windows.contains { window in
+            guard let controller = window.windowController as? TerminalController else { return false }
+            return controller.surfaceTree.contains(where: { $0.needsConfirmQuit })
+        }
+    }
+
+    func sidebarSelect(_ window: NSWindow) {
+        guard window.tabGroup?.selectedWindow != window || !window.isKeyWindow else { return }
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    func sidebarNewTab() {
+        newTab(nil)
+    }
+
+    func sidebarClose(_ window: NSWindow) {
+        guard let target = controller(for: window) else { return }
+        performShowingTab(window, needsVisibleTab: Self.needsCloseConfirmation([window])) {
+            target.closeTab(nil)
+        }
+    }
+
+    func sidebarCloseOthers(_ window: NSWindow) {
+        guard let target = controller(for: window) else { return }
+        let others = (window.tabGroup?.windows ?? []).filter { $0 != window }
+        performShowingTab(window, needsVisibleTab: Self.needsCloseConfirmation(others)) {
+            target.closeOtherTabs(nil)
+        }
+    }
+
+    func sidebarCloseToTheRight(_ window: NSWindow) {
+        guard let target = controller(for: window) else { return }
+        let windows = window.tabGroup?.windows ?? []
+        let right = windows.firstIndex(of: window).map { Array(windows[($0 + 1)...]) } ?? []
+        performShowingTab(window, needsVisibleTab: Self.needsCloseConfirmation(right)) {
+            target.closeTabsOnTheRight(nil)
+        }
+    }
+
+    func sidebarRename(_ window: NSWindow) {
+        guard let target = controller(for: window) else { return }
+        performShowingTab(window, needsVisibleTab: true) {
+            target.promptTabTitle()
+        }
+    }
+
+    func sidebarSetColor(_ color: TerminalTabColor, for window: NSWindow) {
+        (window as? TerminalWindow)?.tabColor = color
+    }
+
+    func sidebarMoveToNewWindow(_ window: NSWindow) {
+        guard (window.tabGroup?.windows.count ?? 0) > 1 else { return }
+        window.moveTabToNewWindow(nil)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    func sidebarMove(_ window: NSWindow, toIndex index: Int) {
+        Self.moveTab(window, to: index)
+        DispatchQueue.main.async { [weak self] in
+            self?.relabelTabs()
+            self?.sidebarModel.refresh()
+        }
+    }
+
+    func sidebarFocusTerminal() {
+        // Selecting a row may have switched tabs; focus that tab's terminal.
+        let target = window?.tabGroup?.selectedWindow?.windowController as? TerminalController ?? self
+        guard let targetWindow = target.window, let surface = target.focusedSurface else { return }
+        DispatchQueue.main.async {
+            targetWindow.makeFirstResponder(surface)
+        }
+    }
+
+    func sidebarResize(to width: CGFloat, finished: Bool) {
+        let containerWidth = terminalViewContainer?.bounds.width ?? .greatestFiniteMagnitude
+        let maxWidth = containerWidth - TerminalViewContainer.minimumTerminalWidthBesideSidebar
+        sidebarModel.setWidth(min(width, max(maxWidth, TerminalTabSidebarPreferences.minimumWidth)), persist: finished)
     }
 }

@@ -63,6 +63,7 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuSelectSplitRight: NSMenuItem?
     @IBOutlet private var menuReturnToDefaultSize: NSMenuItem?
     @IBOutlet private var menuFloatOnTop: NSMenuItem?
+    @IBOutlet private var menuToggleSidebar: NSMenuItem?
     @IBOutlet private var menuUseAsDefault: NSMenuItem?
     @IBOutlet private var menuSetAsDefaultTerminal: NSMenuItem?
 
@@ -1261,6 +1262,12 @@ extension AppDelegate {
 
         syncMenuShortcut(config, action: "toggle_secure_input", menuItem: self.menuSecureInput)
 
+        // The tab sidebar is a macOS-only feature without a Ghostty action, so its
+        // shortcut is fixed rather than configured. Explicit bindings take priority:
+        // if any Ghostty menu binding already claims Cmd+B, we give it up. Bindings
+        // to non-menu actions are already handled by the surface before the menu.
+        syncTabSidebarShortcut(config)
+
         // This menu item is NOT synced with the configuration because it disables macOS
         // global fullscreen keyboard shortcut. The shortcut in the Ghostty config will continue
         // to work but it won't be reflected in the menu item.
@@ -1269,6 +1276,30 @@ extension AppDelegate {
 
         // Dock menu
         reloadDockMenu()
+    }
+
+    @MainActor private func syncTabSidebarShortcut(_ config: Ghostty.Config) {
+        guard let item = menuToggleSidebar else { return }
+        item.setImageIfDesired(systemSymbolName: "sidebar.left")
+        if Self.configClaimsTabSidebarShortcut(config) ||
+            menuShortcutManager.hasShortcut(Self.tabSidebarShortcut) {
+            item.keyEquivalent = ""
+            item.keyEquivalentModifierMask = []
+        } else {
+            item.keyEquivalent = "b"
+            item.keyEquivalentModifierMask = .command
+        }
+    }
+
+    /// The default shortcut for toggling the tab sidebar (Cmd+B).
+    static let tabSidebarShortcut = Ghostty.MenuShortcutManager.MenuShortcutKey(
+        keyEquivalent: "b", modifiers: .command)!
+
+    /// True if the user explicitly bound Cmd+B to any Ghostty action, in which case
+    /// the sidebar menu item gives up its default shortcut.
+    static func configClaimsTabSidebarShortcut(_ config: Ghostty.Config) -> Bool {
+        // kVK_ANSI_B
+        config.isKeyBound(keyCode: 0x0B, characters: "b", modifiers: .command)
     }
 
     @MainActor private func syncMenuShortcut(_ config: Ghostty.Config, action: String, menuItem: NSMenuItem?) {

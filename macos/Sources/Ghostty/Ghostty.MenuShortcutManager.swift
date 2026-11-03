@@ -14,6 +14,11 @@ extension Ghostty {
         /// If multiple items map to the same shortcut, the most recent one wins.
         private var menuItemsByShortcut: [MenuShortcutKey: Weak<NSMenuItem>] = [:]
 
+        /// True if a Ghostty keybind currently owns this shortcut on a menu item.
+        func hasShortcut(_ key: MenuShortcutKey) -> Bool {
+            menuItemsByShortcut[key]?.value != nil
+        }
+
         /// Reset our shortcut index since we're about to rebuild all menu bindings.
         func reset() {
             menuItemsByShortcut.removeAll(keepingCapacity: true)

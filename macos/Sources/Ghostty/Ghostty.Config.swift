@@ -121,6 +121,30 @@ extension Ghostty {
             return ghostty_config_trigger(config, action, UInt(action.lengthOfBytes(using: .utf8)))
         }
 
+        /// True if any keybind in this configuration matches the given key press,
+        /// regardless of which action it is bound to.
+        func isKeyBound(keyCode: UInt16, characters: String, modifiers: NSEvent.ModifierFlags) -> Bool {
+            guard let config,
+                  let event = NSEvent.keyEvent(
+                    with: .keyDown,
+                    location: .zero,
+                    modifierFlags: modifiers,
+                    timestamp: 0,
+                    windowNumber: 0,
+                    context: nil,
+                    characters: characters,
+                    charactersIgnoringModifiers: characters,
+                    isARepeat: false,
+                    keyCode: keyCode)
+            else { return false }
+
+            var key = event.ghosttyKeyEvent(GHOSTTY_ACTION_PRESS)
+            return characters.withCString { ptr in
+                key.text = ptr
+                return ghostty_config_key_is_binding(config, key)
+            }
+        }
+
         // MARK: - Configuration Values
 
         /// For all of the configuration values below, see the associated Ghostty documentation for
@@ -370,6 +394,16 @@ extension Ghostty {
             guard let ptr = v else { return defaultValue }
             let str = String(cString: ptr)
             return MacOSTitlebarProxyIcon(rawValue: str) ?? defaultValue
+        }
+
+        /// The configured tab layout for new windows, or nil to use the last-used layout.
+        var macosTabLayout: MacOSTabLayout? {
+            guard let config = self.config else { return nil }
+            var v: UnsafePointer<Int8>?
+            let key = "macos-tab-layout"
+            guard ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8))) else { return nil }
+            guard let ptr = v else { return nil }
+            return MacOSTabLayout(rawValue: String(cString: ptr))
         }
 
         var macosDockDropBehavior: MacDockDropBehavior {

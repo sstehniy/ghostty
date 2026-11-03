@@ -65,6 +65,7 @@ class TerminalWindow: NSWindow {
         didSet {
             guard tabColor != oldValue else { return }
             tabColorIndicator.rootView = TabColorIndicatorView(tabColor: tabColor)
+            terminalController?.sidebarItem.tabColor = tabColor
             invalidateRestorableState()
         }
     }
@@ -154,6 +155,8 @@ class TerminalWindow: NSWindow {
                 addTitlebarAccessoryViewController(updateAccessory)
                 updateAccessory.view.translatesAutoresizingMaskIntoConstraints = false
             }
+
+            setupSidebarToggleAccessoryIfSupported()
         }
 
         // Setup the accessory view for tabs that shows our keyboard shortcuts,
@@ -181,12 +184,16 @@ class TerminalWindow: NSWindow {
     override var canBecomeMain: Bool { return true }
 
     override func sendEvent(_ event: NSEvent) {
-        if tabTitleEditor.handleMouseDown(event) {
-            return
-        }
+        // The hidden tab bar keeps its frames, so its hit testing must be skipped or
+        // clicks near the top of the terminal could be treated as tab clicks.
+        if !hidesNativeTabBar {
+            if tabTitleEditor.handleMouseDown(event) {
+                return
+            }
 
-        if tabTitleEditor.handleRightMouseDown(event) {
-            return
+            if tabTitleEditor.handleRightMouseDown(event) {
+                return
+            }
         }
 
         super.sendEvent(event)
@@ -212,9 +219,13 @@ class TerminalWindow: NSWindow {
     override func becomeMain() {
         super.becomeMain()
 
+        // AppKit gives the newly selected tab its own tab bar, so the sidebar's
+        // hidden state must be reapplied whenever a tab becomes main.
+        applyNativeTabBarVisibility()
+
         // Its possible we miss the accessory titlebar call so we check again
         // whenever the window becomes main. Both of these are idempotent.
-        if tabBarView != nil {
+        if tabBarView != nil && !hidesNativeTabBar {
             tabBarDidAppear()
         } else {
             tabBarDidDisappear()
@@ -229,7 +240,10 @@ class TerminalWindow: NSWindow {
 
     @discardableResult
     func beginInlineTabTitleEdit(for targetWindow: NSWindow) -> Bool {
-        tabTitleEditor.beginEditing(for: targetWindow)
+        // Inline editing happens in the native tab bar, which is hidden while the
+        // tab sidebar is shown.
+        guard !hidesNativeTabBar else { return false }
+        return tabTitleEditor.beginEditing(for: targetWindow)
     }
 
     @objc private func renameTabFromContextMenu(_ sender: NSMenuItem) {
@@ -260,7 +274,12 @@ class TerminalWindow: NSWindow {
         // it. This has been verified to work on macOS 12 to 26
         if isTabBar(childViewController) {
             childViewController.identifier = Self.tabBarIdentifier
-            tabBarDidAppear()
+            childViewController.isHidden = hidesNativeTabBar
+            if hidesNativeTabBar {
+                tabBarDidDisappear()
+            } else {
+                tabBarDidAppear()
+            }
         }
     }
 
@@ -322,10 +341,88 @@ class TerminalWindow: NSWindow {
         }
     }
 
+    // MARK: Native Tab Bar Visibility
+
+    /// When true the native tab bar is hidden because the tab sidebar is shown.
+    ///
+    /// AppKit's `toggleTabBar` can't hide the bar while more than one tab exists, so
+    /// instead the tab bar's titlebar accessory is hidden. AppKit attaches a tab bar
+    /// to whichever tab is selected, so this is reapplied whenever a tab bar is added
+    /// or the window becomes main.
+    var hidesNativeTabBar: Bool = false {
+        didSet {
+            guard hidesNativeTabBar != oldValue else { return }
+            applyNativeTabBarVisibility()
+            nativeTabBarVisibilityDidChange()
+        }
+    }
+
+    /// Applies `hidesNativeTabBar` to any tab bar accessory currently attached.
+    func applyNativeTabBarVisibility() {
+        for controller in titlebarAccessoryViewControllers where isTabBar(controller) {
+            if controller.isHidden != hidesNativeTabBar {
+                controller.isHidden = hidesNativeTabBar
+            }
+        }
+
+        if hidesNativeTabBar {
+            tabBarDidDisappear()
+        } else if tabBarView != nil {
+            tabBarDidAppear()
+        }
+    }
+
+    /// Subclasses that render the tab bar elsewhere (e.g. titlebar tabs) override
+    /// this to update their layout.
+    func nativeTabBarVisibilityDidChange() {}
+
+    // MARK: Sidebar Toggle
+
+    /// The titlebar button that toggles the tab sidebar.
+    private let sidebarToggleAccessory = NSTitlebarAccessoryViewController()
+
+    /// Whether this window style shows a titlebar button for the tab sidebar. Styles
+    /// that place tabs in the titlebar have no room for it and use the menu instead.
+    var supportsSidebarToggleAccessory: Bool { true }
+
+    private func setupSidebarToggleAccessoryIfSupported() {
+        guard supportsSidebarToggleAccessory, tabbingMode != .disallowed else { return }
+
+        let button = NSButton()
+        button.bezelStyle = .texturedRounded
+        button.isBordered = false
+        button.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Toggle Sidebar")
+        button.imagePosition = .imageOnly
+        button.contentTintColor = .secondaryLabelColor
+        button.toolTip = "Toggle Sidebar"
+        button.setAccessibilityLabel("Toggle Sidebar")
+        // Nil target routes through the responder chain, exactly like the menu item.
+        button.target = nil
+        button.action = #selector(TerminalController.toggleTabSidebar(_:))
+        button.translatesAutoresizingMaskIntoConstraints = false
+
+        // The container keeps a real frame: AppKit sizes titlebar accessories from
+        // it, and a zero-height container would make the button unclickable.
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 32, height: 28))
+        container.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: 26),
+            button.heightAnchor.constraint(equalToConstant: 22),
+            button.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 2),
+            button.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+        ])
+
+        sidebarToggleAccessory.layoutAttribute = .leading
+        sidebarToggleAccessory.view = container
+        addTitlebarAccessoryViewController(sidebarToggleAccessory)
+    }
+
     // MARK: Tab Key Equivalents
 
     var keyEquivalent: String? {
         didSet {
+            terminalController?.sidebarItem.shortcut = keyEquivalent?.isEmpty == false ? keyEquivalent : nil
+
             // When our key equivalent is set, we must update the tab label.
             guard let keyEquivalent else {
                 keyEquivalentLabel.attributedStringValue = NSAttributedString()

@@ -266,6 +266,12 @@ extension Ghostty {
         case hidden
     }
 
+    /// Enum for the macos-tab-layout config option
+    enum MacOSTabLayout: String {
+        case horizontal
+        case vertical
+    }
+
     /// Enum for auto-update-channel config option
     enum AutoUpdateChannel: String {
         case tip

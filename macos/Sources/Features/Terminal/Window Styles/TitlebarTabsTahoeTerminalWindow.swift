@@ -13,6 +13,51 @@ class TitlebarTabsTahoeTerminalWindow: TransparentTitlebarTerminalWindow, NSTool
     /// the native tabs back into the menu bar.
     override var supportsUpdateAccessory: Bool { false }
 
+    /// Tabs occupy the titlebar, so the sidebar is toggled from the menu instead.
+    override var supportsSidebarToggleAccessory: Bool { false }
+
+    override func nativeTabBarVisibilityDidChange() {
+        applyTitlebarTabsVisibility()
+
+        // While the sidebar hides the tab bar, the toolbar shows the title again.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.viewModel.hasTabBar = self.tabBarView != nil && !self.hidesNativeTabBar
+        }
+    }
+
+    /// The tab bar's clip view is constrained into the toolbar by `setupTabBar`, so
+    /// hiding its accessory view controller alone leaves the tabs visible. Hide the
+    /// clip view itself while the tab sidebar is shown.
+    private func applyTitlebarTabsVisibility() {
+        // AppKit ignores `isHidden` on `.right` titlebar accessories, so hide the
+        // accessory view itself. This also covers the empty placeholder AppKit adds
+        // before the NSTabBar exists, which `tabBarView` can't find yet.
+        for controller in titlebarAccessoryViewControllers where controller.identifier == Self.tabBarIdentifier {
+            if controller.view.isHidden != hidesNativeTabBar {
+                controller.view.isHidden = hidesNativeTabBar
+            }
+        }
+
+        guard let tabBarView else { return }
+        let clipView = tabBarView.firstSuperview(withClassName: "NSTitlebarAccessoryClipView")
+            ?? tabBarView.firstSuperview(withClassName: "NSTitlebarAccessoryContainerView")
+        if let clipView, clipView.isHidden != hidesNativeTabBar {
+            clipView.isHidden = hidesNativeTabBar
+        }
+
+        // Our constraints stretch the tab bar across the toolbar, which leaves no room
+        // for the title item. Release them while hidden and restore them when shown.
+        if hidesNativeTabBar {
+            NSLayoutConstraint.deactivate(tabBarConstraints.filter(\.isActive))
+        } else {
+            NSLayoutConstraint.activate(tabBarConstraints.filter { !$0.isActive })
+        }
+    }
+
+    /// The constraints that place the tab bar into the toolbar.
+    private var tabBarConstraints: [NSLayoutConstraint] = []
+
     deinit {
         tabBarObserver = nil
     }
@@ -95,12 +140,22 @@ class TitlebarTabsTahoeTerminalWindow: TransparentTitlebarTerminalWindow, NSTool
         // to put tab bar where we want again
         tabBarObserver = nil
 
+        // Tag it before changing the layout attribute. The base class can only
+        // recognize an empty placeholder tab bar (added when a window first gets
+        // tabs) by its `.bottom` attribute, so without the tag it would miss it and
+        // leave it visible while the tab sidebar is shown.
+        childViewController.identifier = Self.tabBarIdentifier
+
         // Some setup needs to happen BEFORE it is added, such as layout. If
         // we don't do this before the call below, we'll trigger an AppKit
         // assertion.
         childViewController.layoutAttribute = .right
 
         super.addTitlebarAccessoryViewController(childViewController)
+
+        // Hide it immediately while the tab sidebar is shown. Waiting for the
+        // deferred setup below lets the tabs flash in the titlebar.
+        applyTitlebarTabsVisibility()
 
         // Setup the tab bar to go into the titlebar.
         DispatchQueue.main.async {
@@ -150,6 +205,10 @@ class TitlebarTabsTahoeTerminalWindow: TransparentTitlebarTerminalWindow, NSTool
     ///
     /// There are more scenarios to look out for and they're documented within the method.
     func setupTabBar() {
+        // AppKit recreates the tab bar for each selected tab, so reapply the
+        // sidebar's hidden state every time.
+        applyTitlebarTabsVisibility()
+
         // We only want to setup the observer once
         guard tabBarObserver == nil else { return }
 
@@ -160,7 +219,8 @@ class TitlebarTabsTahoeTerminalWindow: TransparentTitlebarTerminalWindow, NSTool
 
         // View model updates must happen on their own ticks.
         DispatchQueue.main.async { [weak self] in
-            self?.viewModel.hasTabBar = true
+            guard let self else { return }
+            self.viewModel.hasTabBar = !self.hidesNativeTabBar
         }
 
         // Find our clip view
@@ -190,7 +250,8 @@ class TitlebarTabsTahoeTerminalWindow: TransparentTitlebarTerminalWindow, NSTool
         accessoryView.translatesAutoresizingMaskIntoConstraints = false
 
         // Setup all our constraints
-        NSLayoutConstraint.activate([
+        NSLayoutConstraint.deactivate(tabBarConstraints)
+        tabBarConstraints = [
             clipView.leftAnchor.constraint(equalTo: container.leftAnchor, constant: leftPadding),
             clipView.rightAnchor.constraint(equalTo: container.rightAnchor),
             clipView.topAnchor.constraint(equalTo: container.topAnchor, constant: 2),
@@ -199,7 +260,10 @@ class TitlebarTabsTahoeTerminalWindow: TransparentTitlebarTerminalWindow, NSTool
             accessoryView.rightAnchor.constraint(equalTo: clipView.rightAnchor),
             accessoryView.topAnchor.constraint(equalTo: clipView.topAnchor),
             accessoryView.heightAnchor.constraint(equalTo: clipView.heightAnchor),
-        ])
+        ]
+        if !hidesNativeTabBar {
+            NSLayoutConstraint.activate(tabBarConstraints)
+        }
 
         clipView.needsLayout = true
         accessoryView.needsLayout = true

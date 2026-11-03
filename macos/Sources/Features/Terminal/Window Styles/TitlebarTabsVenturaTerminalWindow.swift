@@ -29,6 +29,26 @@ class TitlebarTabsVenturaTerminalWindow: TerminalWindow {
 
     // MARK: NSWindow
 
+    /// Tabs occupy the titlebar, so the sidebar is toggled from the menu instead.
+    override var supportsSidebarToggleAccessory: Bool { false }
+
+    override func nativeTabBarVisibilityDidChange() {
+        applyTitlebarTabsVisibility()
+    }
+
+    /// The tab bar's clip view is moved into the titlebar by `pushTabsToTitlebar`,
+    /// so hide the clip view itself while the tab sidebar is shown.
+    private func applyTitlebarTabsVisibility() {
+        guard let controller = titlebarAccessoryViewControllers.first(where: { $0.identifier == Self.tabBarIdentifier }),
+              let clipView = controller.view.superview else { return }
+        if clipView.isHidden != hidesNativeTabBar {
+            clipView.isHidden = hidesNativeTabBar
+        }
+        if let toolbar = toolbar as? TerminalToolbar {
+            toolbar.titleIsHidden = !hidesNativeTabBar
+        }
+    }
+
     override func awakeFromNib() {
         super.awakeFromNib()
 
@@ -398,6 +418,7 @@ class TitlebarTabsVenturaTerminalWindow: TerminalWindow {
 
             self?.hideToolbarOverflowButton()
             self?.hideTitleBarSeparators()
+            self?.applyTitlebarTabsVisibility()
         }
     }
 

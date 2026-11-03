@@ -3477,6 +3477,25 @@ keybind: Keybinds = .{},
 /// editor, etc.
 @"macos-titlebar-proxy-icon": MacTitlebarProxyIcon = .visible,
 
+/// The layout of tabs in new macOS windows.
+///
+/// Valid values are:
+///
+///   * `horizontal` - Show tabs in the native macOS tab bar.
+///   * `vertical` - Show tabs in a sidebar on the leading edge of the window.
+///     The native tab bar is hidden while the sidebar is shown.
+///
+/// If this is not set, new windows use the layout that was last chosen with
+/// the "Toggle Sidebar" menu item (default `cmd+b`), starting with
+/// `horizontal`. The layout of any window can always be switched with that
+/// menu item; the choice applies to all tabs of the window.
+///
+/// The tab sidebar is not available with `macos-titlebar-style = hidden`,
+/// since that style does not support tabs.
+///
+/// Changing this option at runtime only applies to new windows.
+@"macos-tab-layout": ?MacTabLayout = null,
+
 /// Controls the windowing behavior when dropping a file or folder
 /// onto the Ghostty icon in the macOS dock.
 ///
@@ -9289,6 +9308,12 @@ pub const MacTitlebarStyle = enum {
 pub const MacTitlebarProxyIcon = enum {
     visible,
     hidden,
+};
+
+/// See macos-tab-layout
+pub const MacTabLayout = enum {
+    horizontal,
+    vertical,
 };
 
 /// See macos-hidden

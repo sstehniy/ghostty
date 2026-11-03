@@ -109,6 +109,20 @@ class BaseTerminalController: NSWindowController,
     /// The last computed title from the focused surface (without the override).
     private var lastComputedTitle: String = "👻"
 
+    /// The presentation of this tab in the tab sidebar. Title and directory follow
+    /// the tab's last focused pane even while the tab is inactive.
+    private(set) lazy var sidebarItem: TerminalTabSidebarItem = {
+        let item = TerminalTabSidebarItem()
+        item.foregroundPID = { [weak self] in
+            guard let self,
+                  let surface = self.focusedSurface ?? self.surfaceTree.first,
+                  let pid = surface.surfaceModel?.foregroundPID
+            else { return nil }
+            return pid_t(exactly: pid)
+        }
+        return item
+    }()
+
     /// The time that undo/redo operations that contain running ptys are valid for.
     var undoExpiration: Duration {
         ghostty.config.undoTimeout
@@ -893,9 +907,22 @@ class BaseTerminalController: NSWindowController,
                 .map { [weak self] in self?.computeTitle(title: $0, bell: $1) ?? "" }
                 .sink { [weak self] in self?.titleDidChange(to: $0) }
                 .store(in: &focusedSurfaceCancellables)
+
+            // The sidebar shows the directory of this same pane. This is independent
+            // of the window proxy icon, which is only updated while focused.
+            titleSurface.$pwd
+                .removeDuplicates()
+                .sink { [weak self] pwd in
+                    let directory = pwd.flatMap { $0.isEmpty ? nil : $0 }
+                    if self?.sidebarItem.directory != directory {
+                        self?.sidebarItem.directory = directory
+                    }
+                }
+                .store(in: &focusedSurfaceCancellables)
         } else {
             // There is no surface to listen to titles for.
             titleDidChange(to: "👻")
+            sidebarItem.directory = nil
         }
     }
 
@@ -920,10 +947,14 @@ class BaseTerminalController: NSWindowController,
             window.title = computeTitle(
                 title: titleOverride,
                 bell: focusedSurface?.bell ?? false)
-            return
+        } else {
+            window.title = lastComputedTitle
         }
 
-        window.title = lastComputedTitle
+        // The sidebar mirrors the tab title, so manually assigned titles are kept.
+        if sidebarItem.title != window.title {
+            sidebarItem.title = window.title
+        }
     }
 
     func pwdDidChange(to: URL?) {

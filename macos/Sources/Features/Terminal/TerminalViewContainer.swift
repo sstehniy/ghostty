@@ -6,6 +6,14 @@ import SwiftUI
 class TerminalViewContainer: NSView {
     private let terminalView: NSView
 
+    /// The optional tab sidebar placed on the leading edge, beside the terminal.
+    private(set) var sidebarView: TerminalTabSidebarHostView?
+    private var sidebarWidthConstraint: NSLayoutConstraint?
+    private var terminalLeadingConstraint: NSLayoutConstraint!
+
+    /// The narrowest the terminal is allowed to become because of the sidebar.
+    static let minimumTerminalWidthBesideSidebar: CGFloat = 320
+
     /// Background color applied with glass effect
     private(set) var glassEffectView: NSView?
     private var derivedConfig: DerivedConfig?
@@ -45,22 +53,93 @@ class TerminalViewContainer: NSView {
         // with the correct idealWidth/idealHeight. Before that (when
         // @FocusedValue hasn't propagated), it returns a tiny default.
         // Fall back to initialContentSize in that case.
+        let terminalSize: NSSize
         if let initialContentSize,
            hostingSize.width < initialContentSize.width || hostingSize.height < initialContentSize.height {
-            return initialContentSize
+            terminalSize = initialContentSize
+        } else {
+            terminalSize = hostingSize
         }
-        return hostingSize
+
+        // The configured window size describes the terminal, so a visible sidebar
+        // adds to it rather than taking space from the terminal.
+        return contentSize(fittingTerminal: terminalSize)
     }
+
+    /// The content size that leaves `terminalSize` for the terminal, adding room for
+    /// the sidebar when it's shown.
+    func contentSize(fittingTerminal terminalSize: NSSize) -> NSSize {
+        guard let sidebarView, sidebarView.isShown else { return terminalSize }
+        return NSSize(width: terminalSize.width + sidebarView.preferredWidth, height: terminalSize.height)
+    }
+
+    /// Called after the glass background view is added or removed. Removal can be
+    /// deferred past the config change that caused it.
+    var glassEffectDidChange: (() -> Void)?
 
     private func setup() {
         addSubview(terminalView)
         terminalView.translatesAutoresizingMaskIntoConstraints = false
+        terminalLeadingConstraint = terminalView.leadingAnchor.constraint(equalTo: leadingAnchor)
         NSLayoutConstraint.activate([
             terminalView.topAnchor.constraint(equalTo: topAnchor),
-            terminalView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            terminalLeadingConstraint,
             terminalView.bottomAnchor.constraint(equalTo: bottomAnchor),
             terminalView.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
+    }
+
+    // MARK: Sidebar
+
+    /// Install the tab sidebar on the leading edge of the terminal.
+    func installSidebar(_ sidebar: TerminalTabSidebarHostView) {
+        guard sidebarView == nil else { return }
+        sidebarView = sidebar
+
+        addSubview(sidebar, positioned: .above, relativeTo: terminalView)
+        let width = sidebar.widthAnchor.constraint(equalToConstant: 0)
+        sidebarWidthConstraint = width
+
+        terminalLeadingConstraint.isActive = false
+        terminalLeadingConstraint = terminalView.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor)
+        NSLayoutConstraint.activate([
+            sidebar.topAnchor.constraint(equalTo: topAnchor),
+            sidebar.bottomAnchor.constraint(equalTo: bottomAnchor),
+            sidebar.leadingAnchor.constraint(equalTo: leadingAnchor),
+            width,
+            terminalLeadingConstraint,
+        ])
+
+        sidebarLayoutDidChange()
+    }
+
+    /// Call when sidebar visibility or width changed.
+    func sidebarLayoutDidChange() {
+        invalidateIntrinsicContentSize()
+        updateSidebarWidth()
+        needsLayout = true
+    }
+
+    /// The width the sidebar actually occupies for a container width. The sidebar
+    /// never squeezes the terminal below a usable width, but always keeps enough
+    /// room for its own rows (never compacting them) unless the window is tiny.
+    static func effectiveSidebarWidth(preferred: CGFloat, containerWidth: CGFloat) -> CGFloat {
+        let available = containerWidth - minimumTerminalWidthBesideSidebar
+        let floor = min(TerminalTabSidebarPreferences.minimumWidth, containerWidth / 2)
+        return max(min(preferred, available), floor).rounded()
+    }
+
+    private func updateSidebarWidth() {
+        guard let sidebarView, let sidebarWidthConstraint else { return }
+        let visible = sidebarView.isShown
+        sidebarView.isHidden = !visible
+
+        let width = visible
+            ? Self.effectiveSidebarWidth(preferred: sidebarView.preferredWidth, containerWidth: bounds.width)
+            : 0
+        if sidebarWidthConstraint.constant != width {
+            sidebarWidthConstraint.constant = width
+        }
     }
 
     override func viewDidMoveToWindow() {
@@ -70,6 +149,7 @@ class TerminalViewContainer: NSView {
     }
 
     override func layout() {
+        updateSidebarWidth()
         super.layout()
         updateGlassEffectTopInsetIfNeeded()
     }
@@ -208,6 +288,11 @@ extension TerminalViewContainer {
 #endif // compiler(>=6.2)
 
     private func updateGlassEffectIfNeeded() {
+        let hadGlass = glassEffectView != nil
+        defer {
+            if (glassEffectView != nil) != hadGlass { glassEffectDidChange?() }
+        }
+
 #if compiler(>=6.2)
         guard #available(macOS 26.0, *), let derivedConfig else {
             glassEffectView?.removeFromSuperview()
