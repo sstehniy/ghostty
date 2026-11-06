@@ -156,6 +156,12 @@ struct TerminalDormantRestoreTests {
         #expect(group.map(\.id) == tabIDs)
         #expect(group.map(\.order) == [0, 1, 2])
         #expect(group.filter(\.selected).map(\.id) == [tabIDs[1]])
+        let decoder = JSONDecoder()
+        decoder.userInfo[.durableTabSnapshot] = true
+        for record in group {
+            let state = try decoder.decode(TerminalRestorableState.self, from: record.terminal)
+            #expect(state.effectiveFullscreenMode == nil)
+        }
     }
 
     @MainActor @Test func closeRightMenuFollowsSidebarOrderAndProtectsSavedTabs() throws {
