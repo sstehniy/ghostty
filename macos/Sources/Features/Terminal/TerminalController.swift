@@ -63,6 +63,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     /// The tab sidebar state, shared by every tab in this window's tab group.
     private(set) var sidebarModel: TerminalTabSidebarModel
+    var savedTabID = UUID()
+    var savedGroupID: UUID {
+        get { sidebarModel.persistentID }
+        set { sidebarModel.persistentID = newValue }
+    }
 
     /// The tab sidebar view. Nil for window styles that don't support tabs.
     private var sidebarHost: TerminalTabSidebarHostView?
@@ -627,7 +632,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // tab bar, which may be hidden while the tab sidebar is shown.
         tabListenForFrame = window?.tabGroup?.windows.count ?? 0 > 1
 
-        if let windows = window?.tabGroup?.windows.compactMap({ $0 as? TerminalWindow }) {
+        if let group = window?.tabGroup {
+            for window in group.windows { (window as? TerminalWindow)?.keyEquivalent = "" }
+            let windows = sidebarModel.navigationTabs.compactMap { $0.window as? TerminalWindow }
             for (tab, window) in zip(1..., windows) {
                 // We need to clear any windows beyond this because they have had
                 // a keyEquivalent set previously.
@@ -813,6 +820,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         // Iterate through all tabs except the current one.
         for window in tabGroup.windows where window != self.window {
+            if (window.windowController as? TerminalController)?.sidebarItem.lifecycle.isSaved == true { continue }
             // We ignore any non-terminal tabs. They don't currently exist and we can't
             // properly undo them anyways so I'd rather ignore them and get a bug report
             // later if and when we introduce non-terminal tabs.
@@ -847,12 +855,15 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         }
     }
 
-    private func closeTabsOnTheRightImmediately() {
-        guard let window = window else { return }
-        guard let tabGroup = window.tabGroup else { return }
-        guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return }
+    private var ordinaryTabsToTheRight: [NSWindow] {
+        guard let window else { return [] }
+        let ordered = sidebarModel.navigationTabs
+        guard let index = ordered.firstIndex(where: { $0.window === window }) else { return [] }
+        return ordered.dropFirst(index + 1).filter { !$0.item.lifecycle.isSaved }.compactMap(\.window)
+    }
 
-        let tabsToClose = tabGroup.windows.enumerated().filter { $0.offset > currentIndex }
+    private func closeTabsOnTheRightImmediately() {
+        let tabsToClose = ordinaryTabsToTheRight
         guard !tabsToClose.isEmpty else { return }
 
         undoManager?.beginUndoGrouping()
@@ -860,7 +871,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             undoManager?.endUndoGrouping()
         }
 
-        for (_, candidate) in tabsToClose {
+        for candidate in tabsToClose {
             if let controller = candidate.windowController as? TerminalController {
                 controller.closeTabImmediately(registerRedo: false)
             }
@@ -1071,10 +1082,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         let tabIndex: Int?
         weak var tabGroup: NSWindowTabGroup?
         let tabColor: TerminalTabColor
+        let lifecycle: TerminalTabLifecycle
     }
 
     convenience init(_ ghostty: Ghostty.App, with undoState: UndoState) {
         self.init(ghostty, withSurfaceTree: undoState.surfaceTree)
+        sidebarItem.lifecycle = undoState.lifecycle
 
         // Rejoin the original group's sidebar state, if it is still open.
         if let tabGroup = undoState.tabGroup,
@@ -1132,7 +1145,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             focusedSurface: focusedSurface?.id,
             tabIndex: window.tabGroup?.windows.firstIndex(of: window),
             tabGroup: window.tabGroup,
-            tabColor: (window as? TerminalWindow)?.tabColor ?? .none)
+            tabColor: (window as? TerminalWindow)?.tabColor ?? .none,
+            lifecycle: sidebarItem.lifecycle)
     }
 
     // MARK: - NSWindowController
@@ -1287,6 +1301,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     override func windowWillClose(_ notification: Notification) {
+        TerminalSavedTabs.shared.forget(savedTabID)
         super.windowWillClose(notification)
         cancelPendingInitialPresentation()
         self.relabelTabs()
@@ -1326,6 +1341,19 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         self.relabelTabs()
         self.fixTabBar()
         reconnectSidebarModel()
+        // AppKit can select a tab transiently while reordering or restoring it.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window?.isKeyWindow == true else { return }
+            self.resumeSavedTabIfNeeded()
+        }
+    }
+
+    func resumeSavedTabIfNeeded() {
+        guard !TerminalSavedTabs.shared.isRestoring else { return }
+        sidebarItem.lifecycle.wokeAt = nil
+        for surface in surfaceTree { surface.startDeferredTerminal() }
+        syncFocusToSurfaceTree()
+        syncSurfaceTreeOcclusionState()
     }
 
     override func windowDidMove(_ notification: Notification) {
@@ -1366,6 +1394,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     // Called when the window will be encoded. We handle the data encoding here in the
     // window controller.
     func window(_ window: NSWindow, willEncodeRestorableState state: NSCoder) {
+        state.encode(savedTabID.uuidString as NSString, forKey: "savedTabID")
+        state.encode(savedGroupID.uuidString as NSString, forKey: "savedGroupID")
         let data = TerminalRestorableState(from: self)
         data.encode(with: state)
     }
@@ -1419,6 +1449,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                 return false
             }
 
+            guard !controller.sidebarItem.lifecycle.isSaved else { return false }
             // Check if any surfaces require confirmation
             return controller.surfaceTree.contains(where: { $0.needsConfirmQuit })
         }) else {
@@ -1435,14 +1466,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     @IBAction func closeTabsOnTheRight(_ sender: Any?) {
-        guard let window = window else { return }
-        guard let tabGroup = window.tabGroup else { return }
-        guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return }
-
-        let tabsToClose = tabGroup.windows.enumerated().filter { $0.offset > currentIndex }
+        let tabsToClose = ordinaryTabsToTheRight
         guard !tabsToClose.isEmpty else { return }
 
-        let needsConfirm = tabsToClose.contains { (_, candidate) in
+        let needsConfirm = tabsToClose.contains { candidate in
             guard let controller = candidate.windowController as? TerminalController else {
                 return false
             }
@@ -1618,7 +1645,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // Determine our current selected index
         guard let tabGroup = window.tabGroup else { return }
         guard let selectedWindow = tabGroup.selectedWindow else { return }
-        let tabbedWindows = tabGroup.windows
+        let allWindows = tabGroup.windows
+        let tabbedWindows = allWindows.filter { candidate in
+            guard let controller = candidate.windowController as? TerminalController else { return false }
+            return controller.sidebarItem.lifecycle.isPinned == sidebarItem.lifecycle.isPinned &&
+                controller.sidebarItem.lifecycle.isSnoozed == sidebarItem.lifecycle.isSnoozed
+        }
         guard let selectedIndex = tabbedWindows.firstIndex(where: { $0 == selectedWindow }) else { return }
 
         // Determine the final index we want to insert our tab
@@ -1630,7 +1662,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             finalIndex = selectedIndex + min(remaining, action.amount)
         }
 
-        Self.moveTab(selectedWindow, to: finalIndex)
+        guard let fullIndex = allWindows.firstIndex(of: tabbedWindows[finalIndex]) else { return }
+        Self.moveTab(selectedWindow, to: fullIndex)
     }
 
     /// Moves a tab within its tab group so it ends up at `finalIndex` in the group's
@@ -1711,7 +1744,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         guard let windowController = window.windowController else { return }
         guard let tabGroup = windowController.window?.tabGroup else { return }
-        let tabbedWindows = tabGroup.windows
+        let tabbedWindows = sidebarModel.navigationTabs.compactMap(\.window)
+        guard !tabbedWindows.isEmpty else { return }
 
         // This will be the index we want to actual go to
         let finalIndex: Int
@@ -1719,10 +1753,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // An index that is invalid is used to signal some special values.
         if tabIndex <= 0 {
             guard let selectedWindow = tabGroup.selectedWindow else { return }
-            guard let selectedIndex = tabbedWindows.firstIndex(where: { $0 == selectedWindow }) else { return }
+            let selectedIndex = tabbedWindows.firstIndex(where: { $0 == selectedWindow }) ?? -1
 
             if tabIndex == GHOSTTY_GOTO_TAB_PREVIOUS.rawValue {
-                if selectedIndex == 0 {
+                if selectedIndex <= 0 {
                     finalIndex = tabbedWindows.count - 1
                 } else {
                     finalIndex = selectedIndex - 1
@@ -1835,9 +1869,7 @@ extension TerminalController {
             return validateTabSidebarMenuItem(item)
 
         case #selector(closeTabsOnTheRight):
-            guard let window, let tabGroup = window.tabGroup else { return false }
-            guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return false }
-            return tabGroup.windows.indices.contains { $0 > currentIndex }
+            return !ordinaryTabsToTheRight.isEmpty
 
         case #selector(returnToDefaultSize):
             guard let window else { return false }
@@ -2011,6 +2043,7 @@ extension TerminalController {
 
     @objc fileprivate func onSidebarMembershipDidChange(_ notification: Notification) {
         reconnectSidebarModel()
+        window?.invalidateRestorableState()
 
         // Reordering without the visible tab bar produces no frame changes, so
         // relabel shortcuts here as well.
@@ -2080,7 +2113,9 @@ extension TerminalController: TerminalTabSidebarActions {
 
     func sidebarCloseOthers(_ window: NSWindow) {
         guard let target = controller(for: window) else { return }
-        let others = (window.tabGroup?.windows ?? []).filter { $0 != window }
+        let others = (window.tabGroup?.windows ?? []).filter {
+            $0 != window && ($0.windowController as? TerminalController)?.sidebarItem.lifecycle.isSaved != true
+        }
         performShowingTab(window, needsVisibleTab: Self.needsCloseConfirmation(others)) {
             target.closeOtherTabs(nil)
         }
@@ -2088,8 +2123,7 @@ extension TerminalController: TerminalTabSidebarActions {
 
     func sidebarCloseToTheRight(_ window: NSWindow) {
         guard let target = controller(for: window) else { return }
-        let windows = window.tabGroup?.windows ?? []
-        let right = windows.firstIndex(of: window).map { Array(windows[($0 + 1)...]) } ?? []
+        let right = target.ordinaryTabsToTheRight
         performShowingTab(window, needsVisibleTab: Self.needsCloseConfirmation(right)) {
             target.closeTabsOnTheRight(nil)
         }
@@ -2117,7 +2151,49 @@ extension TerminalController: TerminalTabSidebarActions {
         DispatchQueue.main.async { [weak self] in
             self?.relabelTabs()
             self?.sidebarModel.refresh()
+            TerminalSavedTabs.shared.save()
         }
+    }
+
+    func sidebarSetPinned(_ pinned: Bool, for window: NSWindow) {
+        guard let tab = sidebarModel.tabs.first(where: { $0.window === window }) else { return }
+        sidebarModel.setPinned(pinned, for: tab)
+    }
+
+    func sidebarSnooze(_ window: NSWindow, until: Date) {
+        guard let tab = sidebarModel.tabs.first(where: { $0.window === window }), until > Date() else { return }
+        let wasSelected = window.tabGroup?.selectedWindow === window || window.isKeyWindow
+        sidebarModel.snooze(tab, until: until)
+        if wasSelected {
+            if let next = sidebarModel.navigationTabs.first?.window {
+                next.makeKeyAndOrderFront(nil)
+            } else if let style = fullscreenStyle, style.isFullscreen && !style.supportsTabs {
+                _ = Self.newWindow(ghostty, withParent: window)
+            } else {
+                _ = Self.newTab(ghostty, from: window)
+            }
+        }
+    }
+
+    func sidebarCustomSnooze(_ window: NSWindow) {
+        let alert = NSAlert()
+        alert.messageText = "Snooze Tab Until"
+        alert.informativeText = "Choose a future date and time in your local time zone."
+        alert.addButton(withTitle: "Snooze")
+        alert.addButton(withTitle: "Cancel")
+        let picker = NSDatePicker(frame: NSRect(x: 0, y: 0, width: 260, height: 30))
+        picker.datePickerElements = [.yearMonthDay, .hourMinute]
+        picker.dateValue = Date().addingTimeInterval(3600)
+        picker.minDate = Date().addingTimeInterval(1)
+        alert.accessoryView = picker
+        if alert.runModal() == .alertFirstButtonReturn {
+            sidebarSnooze(window, until: picker.dateValue)
+        }
+    }
+
+    func sidebarWake(_ window: NSWindow) {
+        guard let tab = sidebarModel.tabs.first(where: { $0.window === window }) else { return }
+        sidebarModel.wake(tab)
     }
 
     func sidebarFocusTerminal() {

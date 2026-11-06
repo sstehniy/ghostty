@@ -15,6 +15,10 @@ protocol TerminalTabSidebarActions: AnyObject {
     func sidebarMoveToNewWindow(_ window: NSWindow)
     func sidebarMove(_ window: NSWindow, toIndex index: Int)
     func sidebarFocusTerminal()
+    func sidebarSetPinned(_ pinned: Bool, for window: NSWindow)
+    func sidebarSnooze(_ window: NSWindow, until: Date)
+    func sidebarCustomSnooze(_ window: NSWindow)
+    func sidebarWake(_ window: NSWindow)
     func sidebarResize(to width: CGFloat, finished: Bool)
 }
 
@@ -232,36 +236,52 @@ struct TerminalTabSidebarView: View {
     private static let settleAnimation = Animation.easeOut(duration: settleDuration)
 
     var body: some View {
-        let visibleTabs = model.filteredTabs
-
         VStack(spacing: 0) {
             header
 
-            ScrollViewReader { proxy in
-                ScrollView(.vertical) {
-                    VStack(spacing: Self.rowSpacing) {
-                        ForEach(Array(visibleTabs.enumerated()), id: \.element.id) { index, tab in
-                            row(tab, isLast: tab.id == model.tabs.last?.id)
-                                .offset(y: offset(for: tab.id, at: index))
-                                .zIndex(reorder?.id == tab.id ? 1 : 0)
-                                .gesture(reorderGesture(for: tab, at: index, in: visibleTabs))
-                                .id(tab.id)
+            GeometryReader { geometry in
+                VStack(spacing: 0) {
+                    if model.isSearching {
+                        tabList(model.filteredTabs)
+                            .overlay {
+                                if model.filteredTabs.isEmpty {
+                                    Text("No Matching Tabs")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(appearance.foreground.opacity(0.4))
+                                }
+                            }
+                    } else {
+                        if !model.pinnedTabs.isEmpty {
+                            sectionLabel("Pinned")
+                            tabList(model.pinnedTabs)
+                                .frame(height: shelfHeight(model.pinnedTabs.count, available: geometry.size.height))
+                            Divider()
+                        }
+                        tabList(model.normalTabs)
+                            .frame(maxHeight: .infinity)
+                        if !model.snoozedTabs.isEmpty {
+                            Divider()
+                            Button {
+                                model.snoozedExpanded.toggle()
+                            } label: {
+                                HStack {
+                                    Image(systemName: model.snoozedExpanded ? "chevron.down" : "chevron.right")
+                                    Text("Snoozed · \(model.snoozedTabs.count)")
+                                    Spacer()
+                                }
+                                .font(.system(size: 11, weight: .medium))
+                                .padding(10)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(model.snoozedExpanded ? "Collapse Snoozed" : "Expand Snoozed")
+                            .accessibilityValue("\(model.snoozedTabs.count) tabs")
+                            if model.snoozedExpanded {
+                                tabList(model.snoozedTabs)
+                                    .frame(height: shelfHeight(model.snoozedTabs.count, available: geometry.size.height))
+                            }
                         }
                     }
-                    .padding(.horizontal, 6)
-                    .padding(.top, 2)
-                    .padding(.bottom, 8)
-                }
-                .onAppear { scroll(proxy, to: model.selectedID, animated: false) }
-                .onChange(of: model.selectedID) { id in scroll(proxy, to: id, animated: true) }
-                .onChange(of: model.keyboardHighlightID) { id in scroll(proxy, to: id, animated: true) }
-                .onChange(of: model.tabs.map(\.id)) { _ in tabOrderDidChange() }
-            }
-            .overlay {
-                if visibleTabs.isEmpty && model.isSearching {
-                    Text("No Matching Tabs")
-                        .font(.system(size: 12))
-                        .foregroundColor(appearance.foreground.opacity(0.4))
                 }
             }
         }
@@ -275,6 +295,43 @@ struct TerminalTabSidebarView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Tabs")
+    }
+
+    private func shelfHeight(_ count: Int, available: CGFloat) -> CGFloat {
+        min(CGFloat(count) * Self.rowStep + 10, max(0, available * 0.3))
+    }
+
+    private func sectionLabel(_ title: String) -> some View {
+        HStack {
+            Text(title).font(.system(size: 11, weight: .medium))
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .accessibilityAddTraits(.isHeader)
+    }
+
+    private func tabList(_ tabs: [TerminalTabSidebarModel.Tab]) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView(.vertical) {
+                VStack(spacing: Self.rowSpacing) {
+                    ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
+                        row(tab)
+                            .offset(y: tabs.contains(where: { $0.id == reorder?.id }) ? offset(for: tab.id, at: index) : 0)
+                            .zIndex(reorder?.id == tab.id ? 1 : 0)
+                            .gesture(reorderGesture(for: tab, at: index, in: tabs))
+                            .id(tab.id)
+                    }
+                }
+                .padding(.horizontal, 6)
+                .padding(.top, 2)
+                .padding(.bottom, 8)
+            }
+            .onAppear { scroll(proxy, to: model.selectedID, animated: false) }
+            .onChange(of: model.selectedID) { id in scroll(proxy, to: id, animated: true) }
+            .onChange(of: model.keyboardHighlightID) { id in scroll(proxy, to: id, animated: true) }
+            .onChange(of: model.tabs.map(\.id)) { _ in tabOrderDidChange() }
+        }
     }
 
     private var header: some View {
@@ -338,15 +395,17 @@ struct TerminalTabSidebarView: View {
         .animation(.easeOut(duration: 0.12), value: searchFocused)
     }
 
-    private func row(_ tab: TerminalTabSidebarModel.Tab, isLast: Bool) -> some View {
+    private func row(_ tab: TerminalTabSidebarModel.Tab) -> some View {
         TerminalTabSidebarRow(
             item: tab.item,
             isSelected: tab.id == model.selectedID,
             isKeyboardHighlighted: searchFocused && tab.id == model.keyboardHighlightID,
             isLifted: reorder?.id == tab.id && reorder?.committed == false,
             isReordering: reorder != nil,
-            canCloseOthers: model.tabs.count > 1,
-            canCloseToTheRight: !isLast,
+            canMoveToNewWindow: model.tabs.count > 1,
+            canCloseOthers: model.normalTabs.contains { $0.id != tab.id },
+            canCloseToTheRight: model.navigationTabs.drop(while: { $0.id != tab.id }).dropFirst()
+                .contains { !$0.item.lifecycle.isSaved },
             foreground: appearance.foreground,
             accent: appearance.accent,
             lifted: appearance.lifted,
@@ -365,7 +424,7 @@ struct TerminalTabSidebarView: View {
     ) -> some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { value in
-                guard visibleTabs.count > 1 else { return }
+                guard visibleTabs.count > 1, !model.isSearching else { return }
                 let current = reorder ?? Reorder(id: tab.id, startIndex: index, targetIndex: index)
                 guard current.id == tab.id, !current.committed else { return }
 
@@ -473,6 +532,10 @@ struct TerminalTabSidebarView: View {
         case .rename: actions.sidebarRename(window)
         case .color(let color): actions.sidebarSetColor(color, for: window)
         case .moveToNewWindow: actions.sidebarMoveToNewWindow(window)
+        case .pin: actions.sidebarSetPinned(!tab.item.lifecycle.isPinned, for: window)
+        case .snooze(let until): actions.sidebarSnooze(window, until: until)
+        case .customSnooze: actions.sidebarCustomSnooze(window)
+        case .wake: actions.sidebarWake(window)
         }
     }
 
@@ -505,6 +568,10 @@ struct TerminalTabSidebarRow: View {
         case rename
         case color(TerminalTabColor)
         case moveToNewWindow
+        case pin
+        case snooze(Date)
+        case customSnooze
+        case wake
     }
 
     static let height: CGFloat = 44
@@ -515,6 +582,7 @@ struct TerminalTabSidebarRow: View {
     let isKeyboardHighlighted: Bool
     let isLifted: Bool
     let isReordering: Bool
+    let canMoveToNewWindow: Bool
     let canCloseOthers: Bool
     let canCloseToTheRight: Bool
     let foreground: Color
@@ -523,6 +591,7 @@ struct TerminalTabSidebarRow: View {
     let perform: (Action) -> Void
 
     @State private var hoveringRaw = false
+    @AppStorage("TerminalSnoozeMorningHour", store: .ghostty) private var morningHour = 9
 
     /// Hover feedback is suppressed while any row is being dragged.
     private var hovering: Bool { hoveringRaw && !isReordering }
@@ -543,7 +612,16 @@ struct TerminalTabSidebarRow: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
 
-                if let directory = item.displayDirectory {
+                if let until = item.lifecycle.snoozedUntil {
+                    Text("Until \(until.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.system(size: 10))
+                        .foregroundColor(foreground.opacity(0.5))
+                        .lineLimit(1)
+                } else if item.lifecycle.wokeAt != nil {
+                    Label("Woke", systemImage: "alarm")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.orange)
+                } else if let directory = item.displayDirectory {
                     Text(directory)
                         .font(.system(size: 11))
                         .foregroundColor(foreground.opacity(isSelected ? 0.5 : 0.4))
@@ -553,6 +631,12 @@ struct TerminalTabSidebarRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
+            if let issue = item.restorationIssue {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundColor(.orange)
+                    .help(issue)
+                    .accessibilityLabel(issue)
+            }
             trailing
                 .frame(width: 24, alignment: .trailing)
         }
@@ -634,6 +718,26 @@ struct TerminalTabSidebarRow: View {
 
     @ViewBuilder
     private var contextMenu: some View {
+        Button(item.lifecycle.isPinned ? "Unpin Tab" : "Pin Tab") { perform(.pin) }
+        Menu("Snooze") {
+            ForEach(TerminalSnoozePreset.allCases, id: \.self) { preset in
+                Button(preset.rawValue) {
+                    let hour = (0..<24).contains(morningHour) ? morningHour : 9
+                    if let deadline = preset.deadline(morningHour: hour) { perform(.snooze(deadline)) }
+                }
+            }
+            Button("Custom…") { perform(.customSnooze) }
+            Divider()
+            Picker("Morning Time", selection: $morningHour) {
+                ForEach(0..<24, id: \.self) { hour in
+                    Text(String(format: "%02d:00", hour)).tag(hour)
+                }
+            }
+        }
+        if item.lifecycle.isSnoozed {
+            Button("Wake Tab") { perform(.wake) }
+        }
+        Divider()
         Button("Rename Tab…") { perform(.rename) }
         Menu("Tab Color") {
             ForEach(TerminalTabColor.allCases, id: \.self) { color in
@@ -650,7 +754,7 @@ struct TerminalTabSidebarRow: View {
         }
         Divider()
         Button("Move Tab to New Window") { perform(.moveToNewWindow) }
-            .disabled(!canCloseOthers)
+            .disabled(!canMoveToNewWindow)
         Divider()
         Button("Close Tab") { perform(.close) }
         Button("Close Other Tabs") { perform(.closeOthers) }
@@ -660,13 +764,18 @@ struct TerminalTabSidebarRow: View {
     }
 
     private var tooltip: String {
-        [title, item.displayDirectory].compactMap { $0 }.joined(separator: "\n")
+        [title, item.displayDirectory, item.restorationIssue].compactMap { $0 }.joined(separator: "\n")
     }
 
     private var accessibilityLabel: String {
         var parts = [title]
         if let directory = item.displayDirectory { parts.append(directory) }
         if item.icon != .terminal { parts.append(item.icon.accessibilityName) }
+        if item.lifecycle.isPinned { parts.append("Pinned") }
+        if let until = item.lifecycle.snoozedUntil {
+            parts.append("Snoozed until \(until.formatted(date: .abbreviated, time: .shortened))")
+        }
+        if let issue = item.restorationIssue { parts.append(issue) }
         return parts.joined(separator: ", ")
     }
 }

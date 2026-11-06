@@ -24,6 +24,9 @@ final class TerminalTabSidebarItem: ObservableObject {
     /// The keyboard shortcut label for selecting this tab (e.g. "⌘1").
     @Published var shortcut: String?
 
+    @Published var lifecycle = TerminalTabLifecycle()
+    @Published var restorationIssue: String?
+
     /// Returns the foreground process of the tab's last focused pane. Called on the
     /// main thread by the icon sampler.
     var foregroundPID: () -> pid_t? = { nil }
@@ -111,6 +114,10 @@ final class TerminalTabSidebarModel: ObservableObject {
     @Published private(set) var isVisible: Bool
     @Published private(set) var width: CGFloat
     @Published var searchText: String = ""
+    @Published var snoozedExpanded = false {
+        didSet { TerminalSavedTabs.shared.save() }
+    }
+    var persistentID = UUID()
 
     /// All tabs in tab-group order.
     @Published private(set) var tabs: [Tab] = []
@@ -142,6 +149,7 @@ final class TerminalTabSidebarModel: ObservableObject {
     private var selectionObservation: NSKeyValueObservation?
     private var itemObservations: [AnyCancellable] = []
     private var iconTimer: Timer?
+    private var snoozeTimer: Timer?
 
     /// Seconds between icon samples while the sidebar is visible.
     static let iconSampleInterval: TimeInterval = 2
@@ -159,6 +167,10 @@ final class TerminalTabSidebarModel: ObservableObject {
         self.preferences = preferences
         self.isVisible = Self.initialVisibility(configuredLayout: configuredLayout, lastUsed: preferences.isVisible)
         self.width = preferences.width
+        NotificationCenter.default.addObserver(self, selector: #selector(clockChanged),
+            name: NSNotification.Name.NSSystemClockDidChange, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(clockChanged),
+            name: NSWorkspace.didWakeNotification, object: nil)
     }
 
     /// Whether a new window group starts with the sidebar (vertical tabs).
@@ -183,6 +195,9 @@ final class TerminalTabSidebarModel: ObservableObject {
         windowsObservation?.invalidate()
         selectionObservation?.invalidate()
         iconTimer?.invalidate()
+        snoozeTimer?.invalidate()
+        NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         Self.unregister(self)
     }
 
@@ -282,6 +297,70 @@ final class TerminalTabSidebarModel: ObservableObject {
         }
 
         refreshSelection()
+        scheduleSnoozeWake()
+    }
+
+    var pinnedTabs: [Tab] { tabs.filter { $0.item.lifecycle.isPinned } }
+    var normalTabs: [Tab] { tabs.filter { !$0.item.lifecycle.isSaved } }
+    var snoozedTabs: [Tab] { tabs.filter { $0.item.lifecycle.isSnoozed } }
+    var navigationTabs: [Tab] { pinnedTabs + normalTabs }
+
+    func setPinned(_ pinned: Bool, for tab: Tab) {
+        tab.item.lifecycle.pin(pinned)
+        lifecycleDidChange()
+    }
+
+    func snooze(_ tab: Tab, until: Date) {
+        guard tab.item.lifecycle.snooze(until: until) else { return }
+        lifecycleDidChange()
+    }
+
+    func wake(_ tab: Tab) {
+        guard tab.item.lifecycle.wake() else { return }
+        moveWokenTabToTop(tab)
+        lifecycleDidChange()
+    }
+
+    func wakeDueTabs(now: Date = Date()) {
+        var changed = false
+        for tab in tabs where tab.item.lifecycle.wake(now: now, onlyIfDue: true) {
+            moveWokenTabToTop(tab)
+            changed = true
+        }
+        if changed { lifecycleDidChange() }
+    }
+
+    private func moveWokenTabToTop(_ tab: Tab) {
+        guard let window = tab.window else { return }
+        if let first = normalTabs.first(where: { $0.id != tab.id }),
+           let index = tabs.firstIndex(where: { $0.id == first.id }),
+           let currentIndex = tabs.firstIndex(where: { $0.id == tab.id }), currentIndex > index {
+            TerminalController.moveTab(window, to: index)
+        }
+    }
+
+    private func lifecycleDidChange() {
+        objectWillChange.send()
+        scheduleSnoozeWake()
+        NotificationCenter.default.post(name: Self.membershipDidChange, object: self)
+        TerminalSavedTabs.shared.refresh()
+    }
+
+    @objc private func clockChanged(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            self?.wakeDueTabs()
+            self?.scheduleSnoozeWake()
+        }
+    }
+
+    private func scheduleSnoozeWake() {
+        snoozeTimer?.invalidate()
+        guard let deadline = tabs.compactMap({ $0.item.lifecycle.snoozedUntil }).min() else { return }
+        let timer = Timer(fire: max(deadline, Date()), interval: 0, repeats: false) { [weak self] _ in
+            self?.wakeDueTabs()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        snoozeTimer = timer
     }
 
     /// Search results depend on each tab's title and directory, which publish on
@@ -289,9 +368,10 @@ final class TerminalTabSidebarModel: ObservableObject {
     /// so the filtered list stays current.
     private func observeItems() {
         itemObservations = tabs.map { tab in
-            Publishers.Merge(
+            Publishers.Merge3(
                 tab.item.$title.dropFirst().map { _ in () },
-                tab.item.$directory.dropFirst().map { _ in () }
+                tab.item.$directory.dropFirst().map { _ in () },
+                tab.item.$lifecycle.dropFirst().map { _ in () }
             )
             .sink { [weak self] in
                 guard let self, self.isSearching else { return }
@@ -309,7 +389,8 @@ final class TerminalTabSidebarModel: ObservableObject {
 
     /// The tabs matching the current search, in full tab order.
     var filteredTabs: [Tab] {
-        tabs.filter { Self.matches(query: searchText, title: $0.item.title, directory: $0.item.displayDirectory) }
+        let candidates = isSearching ? navigationTabs + snoozedTabs : navigationTabs
+        return candidates.filter { Self.matches(query: searchText, title: $0.item.title, directory: $0.item.displayDirectory) }
     }
 
     var isSearching: Bool {

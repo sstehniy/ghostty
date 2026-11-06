@@ -89,6 +89,10 @@ function __ghostty_setup --on-event fish_prompt -d "Setup ghostty integration"
         end
     end
 
+    if set -q GHOSTTY_AGENT_BIN_DIR; and test -d "$GHOSTTY_AGENT_BIN_DIR"
+        fish_add_path --global --path --move --prepend "$GHOSTTY_AGENT_BIN_DIR"
+    end
+
     # Add Ghostty binary to PATH if the path feature is enabled
     if contains path $features; and test -n "$GHOSTTY_BIN_DIR"
         fish_add_path --global --path --append "$GHOSTTY_BIN_DIR"

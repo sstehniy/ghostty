@@ -83,6 +83,25 @@ extension Ghostty {
                     .transition(.opacity)
                 }
 
+                if let issue = surfaceView.savedSessionIssue {
+                    VStack {
+                        HStack(alignment: .top) {
+                            Image(systemName: "exclamationmark.triangle")
+                            Text(issue).font(.system(size: 12))
+                            if let command = surfaceView.savedResumeCommand {
+                                Button("Copy Resume Command") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(command, forType: .string)
+                                }
+                            }
+                            Button("Dismiss") { surfaceView.dismissSavedSessionIssue() }
+                        }
+                        .padding(10)
+                        .background(.regularMaterial)
+                        Spacer()
+                    }
+                }
+
                 // Readonly indicator badge
                 if surfaceView.readonly {
                     ReadonlyBadge {
@@ -632,7 +651,7 @@ extension Ghostty {
             config.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(
                 nsview: Unmanaged.passUnretained(view).toOpaque()
             ))
-            config.scale_factor = NSScreen.main!.backingScaleFactor
+            config.scale_factor = Double(view.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1)
 
             // Zero is our default value that means to inherit the font size.
             config.font_size = fontSize ?? 0

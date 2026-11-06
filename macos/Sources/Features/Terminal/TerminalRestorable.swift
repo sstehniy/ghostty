@@ -145,6 +145,20 @@ class TerminalWindowRestoration: NSObject, NSWindowRestoration {
             return
         }
 
+        var tabID: UUID?
+        var groupID: UUID?
+        if state.containsValue(forKey: "savedTabID") {
+            tabID = (state.decodeObject(of: NSString.self, forKey: "savedTabID") as String?).flatMap(UUID.init(uuidString:))
+        }
+        if state.containsValue(forKey: "savedGroupID") {
+            groupID = (state.decodeObject(of: NSString.self, forKey: "savedGroupID") as String?).flatMap(UUID.init(uuidString:))
+        }
+        // The explicit store owns saved tabs, including their dormant processes.
+        if let tabID, TerminalSavedTabs.shared.contains(tabID) {
+            completionHandler(nil, nil)
+            return
+        }
+
         // Decode the state. If we can't decode the state, then we can't restore.
         guard let state = TerminalRestorableState(coder: state) else {
             completionHandler(nil, TerminalRestoreError.stateDecodeFailed)
@@ -158,6 +172,8 @@ class TerminalWindowRestoration: NSObject, NSWindowRestoration {
         let c = TerminalController.init(
             appDelegate.ghostty,
             withSurfaceTree: state.surfaceTree)
+        if let tabID { c.savedTabID = tabID }
+        if let groupID { c.savedGroupID = groupID }
         guard let window = c.window else {
             completionHandler(nil, TerminalRestoreError.windowDidNotLoad)
             return
@@ -199,7 +215,7 @@ class TerminalWindowRestoration: NSObject, NSWindowRestoration {
     /// This restores the focus state of the surfaceview within the given window. When restoring,
     /// the view isn't immediately attached to the window since we have to wait for SwiftUI to
     /// catch up. Therefore, we sit in an async loop waiting for the attachment to happen.
-    private static func restoreFocus(to: Ghostty.SurfaceView, inWindow: NSWindow, attempts: Int = 0) {
+    static func restoreFocus(to: Ghostty.SurfaceView, inWindow: NSWindow, attempts: Int = 0) {
         // For the first attempt, we schedule it immediately. Subsequent events wait a bit
         // so we don't just spin the CPU at 100%. Give up after some period of time.
         let after: DispatchTime

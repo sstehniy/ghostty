@@ -333,6 +333,8 @@ class AppDelegate: NSObject,
         // Setup signal handlers
         setupSignals()
 
+        TerminalSavedTabs.shared.restore(ghostty)
+
         switch Ghostty.launchSource {
         case .app:
             // Don't have to do anything.
@@ -374,7 +376,8 @@ class AppDelegate: NSObject,
             // is possible to have other windows in a few scenarios:
             //   - if we're opening a URL since `application(_:openFile:)` is called before this.
             //   - if we're restoring from persisted state
-            if TerminalController.all.isEmpty && derivedConfig.initialWindow {
+            if TerminalController.all.isEmpty && derivedConfig.initialWindow &&
+                (TerminalSavedTabs.shared.hasRestored || TerminalSavedTabs.shared.archive.tabs.isEmpty) {
                 undoManager.disableUndoRegistration()
                 _ = TerminalController.newWindow(ghostty)
                 undoManager.enableUndoRegistration()
@@ -388,12 +391,12 @@ class AppDelegate: NSObject,
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let windows = NSApplication.shared.windows
-        if windows.isEmpty { return .terminateNow }
+        if windows.isEmpty { return terminateSavingTabs() }
 
         // If we've already accepted to install an update, then we don't need to
         // confirm quit. The user is already expecting the update to happen.
         if updateController.shouldTerminateWithoutWarning {
-            return .terminateNow
+            return terminateSavingTabs()
         }
 
         // If the user is shutting down, restarting, or logging out, we don't confirm quit.
@@ -406,7 +409,7 @@ class AppDelegate: NSObject,
             if let why = event.attributeDescriptor(forKeyword: keyword) {
                 switch why.typeCodeValue {
                 case kAEShutDown, kAERestart, kAEReallyLogOut:
-                    return .terminateNow
+                    return terminateSavingTabs()
 
                 default:
                     break
@@ -415,12 +418,13 @@ class AppDelegate: NSObject,
         }
 
         // If our app says we don't need to confirm, we can exit now.
-        if !ghostty.needsConfirmQuit { return .terminateNow }
+        if !ghostty.needsConfirmQuit { return terminateSavingTabs() }
 
         return terminate()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        TerminalSavedTabs.shared.terminate()
         // We have no notifications we want to persist after death,
         // so remove them all now. In the future we may want to be
         // more selective and only remove surface-targeted notifications.
@@ -1397,13 +1401,18 @@ extension AppDelegate: NSMenuItemValidation {
 // MARK: - Termination Flow
 
 extension AppDelegate {
+    private func terminateSavingTabs() -> NSApplication.TerminateReply {
+        TerminalSavedTabs.shared.terminate()
+        return .terminateNow
+    }
+
     func terminate() -> NSApplication.TerminateReply {
         let controllersNeedConfirmation = NSApplication.shared.windows
             .compactMap { $0.windowController as? BaseTerminalController }
             .filter { !$0.windowCanBeClosedWithoutConfirmation() }
 
         guard !controllersNeedConfirmation.isEmpty else {
-            return .terminateNow
+            return terminateSavingTabs()
         }
 
         if controllersNeedConfirmation.count == 1 {
@@ -1415,6 +1424,7 @@ extension AppDelegate {
                 )
 
                 if [.OK, .alertFirstButtonReturn].contains(response) {
+                    await MainActor.run { TerminalSavedTabs.shared.terminate() }
                     await NSApp.reply(toApplicationShouldTerminate: true)
                 } else {
                     await NSApp.reply(toApplicationShouldTerminate: false)
@@ -1432,7 +1442,7 @@ extension AppDelegate {
                 reviewWindows(controllersNeedConfirmation)
                 return .terminateLater
             case .alertSecondButtonReturn:
-                return .terminateNow
+                return terminateSavingTabs()
             default:
                 return .terminateCancel
             }
@@ -1440,6 +1450,8 @@ extension AppDelegate {
     }
 
     private func reviewWindows(_ controllers: [BaseTerminalController]) {
+        let selectedWindows = Set(controllers.compactMap { $0.window?.tabGroup?.selectedWindow })
+        let keyWindow = NSApp.keyWindow
         Task {
             for controller in controllers {
                 let response = await controller.confirmCloseAsync(
@@ -1449,14 +1461,18 @@ extension AppDelegate {
                 )
 
                 if [.OK, .alertFirstButtonReturn].contains(response) {
-                    // Close this window and until next review is cancelled
-                    await controller.window?.close()
+                    // Keep every tab intact until the entire Quit review is approved.
                     continue
                 } else {
                     await NSApp.reply(toApplicationShouldTerminate: false)
                     // Cancel the review
                     return
                 }
+            }
+            await MainActor.run {
+                for window in selectedWindows { window.tabGroup?.selectedWindow = window }
+                keyWindow?.makeKey()
+                TerminalSavedTabs.shared.terminate()
             }
             await NSApp.reply(toApplicationShouldTerminate: true)
         }

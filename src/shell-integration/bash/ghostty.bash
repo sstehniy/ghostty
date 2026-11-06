@@ -79,6 +79,10 @@ if [ -n "$GHOSTTY_BASH_INJECT" ]; then
   builtin unset GHOSTTY_BASH_RCFILE
 fi
 
+if [[ -n "$GHOSTTY_AGENT_BIN_DIR" && -d "$GHOSTTY_AGENT_BIN_DIR" ]]; then
+  export PATH="$GHOSTTY_AGENT_BIN_DIR:$PATH"
+fi
+
 # Add Ghostty binary to PATH if the path feature is enabled
 if [[ "$GHOSTTY_SHELL_FEATURES" == *"path"* && -n "$GHOSTTY_BIN_DIR" ]]; then
   if [[ ":$PATH:" != *":$GHOSTTY_BIN_DIR:"* ]]; then

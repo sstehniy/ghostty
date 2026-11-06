@@ -79,6 +79,12 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                         DebugBuildWarningView()
                     }
 
+                    if let controller = viewModel as? TerminalController {
+                        SavedTabBanner(item: controller.sidebarItem) {
+                            if let window = controller.window { controller.sidebarWake(window) }
+                        }
+                    }
+
                     TerminalSplitTreeView(
                         tree: viewModel.surfaceTree,
                         action: { delegate?.performSplitAction($0) })
@@ -123,6 +129,25 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                 }
             }
             .frame(maxWidth: .greatestFiniteMagnitude, maxHeight: .greatestFiniteMagnitude)
+        }
+    }
+}
+
+private struct SavedTabBanner: View {
+    @ObservedObject var item: TerminalTabSidebarItem
+    let wake: () -> Void
+
+    var body: some View {
+        if let until = item.lifecycle.snoozedUntil {
+            HStack {
+                Image(systemName: "clock")
+                Text("Snoozed until \(until.formatted(date: .abbreviated, time: .shortened))")
+                Spacer()
+                Button("Wake Now", action: wake)
+            }
+            .font(.system(size: 12))
+            .padding(8)
+            .background(.regularMaterial)
         }
     }
 }

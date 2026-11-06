@@ -47,6 +47,10 @@ export module ghostty {
   }
 }
 
+if ($env.GHOSTTY_AGENT_BIN_DIR? | default "") != "" {
+  $env.PATH = ($env.PATH | prepend $env.GHOSTTY_AGENT_BIN_DIR | uniq)
+}
+
 # Clean up XDG_DATA_DIRS by removing GHOSTTY_SHELL_INTEGRATION_XDG_DIR
 if 'GHOSTTY_SHELL_INTEGRATION_XDG_DIR' in $env {
   if 'XDG_DATA_DIRS' in $env {

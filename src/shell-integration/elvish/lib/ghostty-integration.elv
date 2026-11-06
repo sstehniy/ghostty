@@ -8,6 +8,10 @@
     unset-env GHOSTTY_SHELL_INTEGRATION_XDG_DIR
   }
 
+  if (has-env GHOSTTY_AGENT_BIN_DIR) {
+    set paths = [$E:GHOSTTY_AGENT_BIN_DIR $@paths]
+  }
+
   # List of enabled shell integration features
   var features = [(str:split ',' $E:GHOSTTY_SHELL_FEATURES)]
 

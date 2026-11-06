@@ -229,7 +229,107 @@ extension Ghostty {
         // We need to support being a first responder so that we can get input events
         override var acceptsFirstResponder: Bool { return true }
 
-        init(_ app: ghostty_app_t, baseConfig: SurfaceConfiguration? = nil, uuid: UUID? = nil) {
+        private var deferredConfiguration: SurfaceConfiguration?
+        private var pendingRestoration: TerminalAgentRestoration?
+        private var resumeStartedAt: Date?
+        private var resumeToken: UUID?
+        @Published var savedSessionIssue: String?
+        private(set) var savedResumeCommand: String?
+
+        var agentRestoration: TerminalAgentRestoration? {
+            if let pendingRestoration { return pendingRestoration }
+            let pid = surfaceModel?.foregroundPID.flatMap(pid_t.init(exactly:))
+            return TerminalAgentIntegration.snapshot(surface: id, pid: pid)
+        }
+
+        func startDeferredTerminal() {
+            guard var config = deferredConfiguration,
+                  let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return }
+            deferredConfiguration = nil
+            if let restoration = pendingRestoration {
+                savedSessionIssue = restoration.issue
+                if let session = restoration.session {
+                    let token = UUID()
+                    resumeToken = token
+                    savedResumeCommand = session.command(helper: TerminalAgentIntegration.helper, resumeToken: token)
+                    var isDirectory: ObjCBool = false
+                    if FileManager.default.fileExists(atPath: session.directory, isDirectory: &isDirectory), isDirectory.boolValue,
+                       FileManager.default.isExecutableFile(atPath: session.executable),
+                       session.hasExistingConversation, savedResumeCommand != nil,
+                       let encoded = try? JSONEncoder().encode(session),
+                       let json = String(data: encoded, encoding: .utf8) {
+                        config.workingDirectory = session.directory
+                        config.environmentVariables.merge(session.environment) { _, saved in saved }
+                        config.environmentVariables["GHOSTTY_AGENT_RESUME"] = json
+                        config.initialInput = "ghostty-resume-saved-agent \(token.uuidString)\n"
+                        resumeStartedAt = Date()
+                    } else {
+                        savedSessionIssue = "The saved agent, conversation, directory, or resume command is unavailable. Nothing was restarted."
+                    }
+                }
+            }
+            if let cwd = config.workingDirectory, !FileManager.default.fileExists(atPath: cwd) {
+                config.workingDirectory = FileManager.default.homeDirectoryForCurrentUser.path
+                savedSessionIssue = "The saved working directory no longer exists. Opened a fresh shell in your home directory."
+            }
+            initializeTerminal(app, config: config)
+            objectWillChange.send()
+        }
+
+        func updateSavedAgentStatus() {
+            guard deferredConfiguration == nil else { return }
+            let pid = surfaceModel?.foregroundPID.flatMap(pid_t.init(exactly:))
+            let current = TerminalAgentIntegration.snapshot(surface: id, pid: pid)
+            let confirmed: TerminalAgentSession?
+            if let resumeToken {
+                confirmed = TerminalAgentIntegration.confirmedSession(surface: id, token: resumeToken)
+            } else {
+                confirmed = current?.session
+            }
+            if let currentSession = confirmed {
+                if let expected = pendingRestoration?.session {
+                    let expectedID = UUID(uuidString: expected.nativeSessionID ?? expected.session)
+                    let actualID = UUID(uuidString: currentSession.nativeSessionID ?? currentSession.session)
+                    if expected.kind != currentSession.kind || expectedID != actualID {
+                        savedSessionIssue = "The agent opened a different conversation. The saved conversation has not been replaced. Copy its resume command to recover it, or dismiss to keep the current conversation."
+                        resumeStartedAt = nil
+                        return
+                    }
+                }
+                pendingRestoration = nil
+                resumeStartedAt = nil
+                resumeToken = nil
+                savedSessionIssue = nil
+            } else if let started = resumeStartedAt, Date().timeIntervalSince(started) > 10 {
+                savedSessionIssue = "The agent has not confirmed resuming its session. Check its terminal output or copy the resume command to retry manually."
+            }
+        }
+
+        func dismissSavedSessionIssue() {
+            savedSessionIssue = nil
+            pendingRestoration = nil
+            resumeStartedAt = nil
+            resumeToken = nil
+        }
+
+        private func initializeTerminal(_ app: ghostty_app_t, config: SurfaceConfiguration) {
+            var config = config
+            TerminalAgentIntegration.configure(&config, surface: id)
+            let surface = config.withCValue(view: self) { ghostty_surface_new(app, &$0) }
+            guard let surface else {
+                self.error = Ghostty.Error.apiFailed
+                return
+            }
+            self.surfaceModel = Ghostty.Surface(cSurface: surface)
+            viewDidChangeBackingProperties()
+            if let screen = window?.screen { ghostty_surface_set_display_id(surface, screen.displayID ?? 0) }
+            isWindowVisible = window?.occlusionState.contains(.visible) ?? false
+            ghostty_surface_set_occlusion(surface, isWindowVisible)
+            updateTrackingAreas()
+            registerForDraggedTypes(Array(Self.dropTypes))
+        }
+
+        init(_ app: ghostty_app_t, baseConfig: SurfaceConfiguration? = nil, uuid: UUID? = nil, deferTerminal: Bool = false) {
             self.markedText = NSMutableAttributedString()
 
             // Our initial config always is our application wide config.
@@ -383,22 +483,11 @@ extension Ghostty {
                 ]
             ) { [weak self] event in self?.localEventHandler(event) }
 
-            // Setup our surface. This will also initialize all the terminal IO.
-            let surface_cfg = baseConfig ?? SurfaceConfiguration()
-            let surface = surface_cfg.withCValue(view: self) { surface_cfg_c in
-                ghostty_surface_new(app, &surface_cfg_c)
+            if deferTerminal {
+                deferredConfiguration = baseConfig ?? SurfaceConfiguration()
+            } else {
+                initializeTerminal(app, config: baseConfig ?? SurfaceConfiguration())
             }
-            guard let surface = surface else {
-                self.error = Ghostty.Error.apiFailed
-                return
-            }
-            self.surfaceModel = Ghostty.Surface(cSurface: surface)
-
-            // Setup our tracking area so we get mouse moved events
-            updateTrackingAreas()
-
-            // The UTTypes that can be dragged onto this view.
-            registerForDraggedTypes(Array(Self.dropTypes))
         }
 
         required init?(coder: NSCoder) {
@@ -1894,6 +1983,7 @@ extension Ghostty {
             case uuid
             case title
             case isUserSetTitle
+            case agentRestoration
         }
 
         required convenience init(from decoder: Decoder) throws {
@@ -1911,7 +2001,12 @@ extension Ghostty {
             let savedTitle = try container.decodeIfPresent(String.self, forKey: .title)
             let isUserSetTitle = try container.decodeIfPresent(Bool.self, forKey: .isUserSetTitle) ?? false
 
-            self.init(app, baseConfig: config, uuid: uuid)
+            let durable = decoder.userInfo[.durableTabSnapshot] as? Bool == true
+            self.init(app, baseConfig: config, uuid: uuid, deferTerminal: durable)
+            if durable {
+                pendingRestoration = try container.decodeIfPresent(TerminalAgentRestoration.self, forKey: .agentRestoration)
+                self.pwd = config.workingDirectory
+            }
 
             // Restore the saved title after initialization
             if let title = savedTitle {
@@ -1929,6 +2024,9 @@ extension Ghostty {
             try container.encode(id.uuidString, forKey: .uuid)
             try container.encode(title, forKey: .title)
             try container.encode(titleFromTerminal != nil, forKey: .isUserSetTitle)
+            if encoder.userInfo[.durableTabSnapshot] as? Bool == true {
+                try container.encodeIfPresent(agentRestoration, forKey: .agentRestoration)
+            }
         }
     }
 }

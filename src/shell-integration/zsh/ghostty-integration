@@ -295,6 +295,10 @@ _ghostty_deferred_init() {
         fi
     "${functions[_ghostty_zle_line_init]}
 
+    if [[ -n "$GHOSTTY_AGENT_BIN_DIR" && -d "$GHOSTTY_AGENT_BIN_DIR" ]]; then
+      builtin export PATH="$GHOSTTY_AGENT_BIN_DIR:$PATH"
+    fi
+
     # Add Ghostty binary to PATH if the path feature is enabled
     if [[ "$GHOSTTY_SHELL_FEATURES" == *"path"* ]] && [[ -n "$GHOSTTY_BIN_DIR" ]]; then
       if [[ ":$PATH:" != *":$GHOSTTY_BIN_DIR:"* ]]; then

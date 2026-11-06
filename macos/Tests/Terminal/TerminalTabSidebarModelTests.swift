@@ -445,6 +445,58 @@ struct TerminalTabSidebarIconTests {
     }
 }
 
+struct TerminalTabSidebarLifecycleTests {
+    @MainActor @Test(arguments: [0, 1, 2]) func wakingPlacesTabFirstWithoutChangingSelection(index: Int) throws {
+        let defaults = TemporaryDefaults()
+        let windows = ["a", "b", "c"].map(makeWindow)
+        defer { windows.forEach { $0.close() } }
+        let items = windows.map { item($0.title) }
+        let model = makeModel(defaults: defaults.defaults,
+            items: Dictionary(uniqueKeysWithValues: zip(windows.map(ObjectIdentifier.init), items)))
+        windows[0].orderFront(nil)
+        windows[0].addTabbedWindow(windows[1], ordered: .above)
+        windows[1].addTabbedWindow(windows[2], ordered: .above)
+        let group = try #require(windows[0].tabGroup)
+        model.bind(to: group)
+        let selected = group.selectedWindow
+        let tab = model.tabs[index]
+        model.snooze(tab, until: .distantFuture)
+        model.wake(tab)
+        model.refresh()
+        #expect(model.normalTabs.first?.window === windows[index])
+        #expect(group.selectedWindow === selected)
+    }
+
+    @MainActor @Test func sectionsNavigationAndSearchKeepSnoozedTabsOutOfTheWay() throws {
+        let defaults = TemporaryDefaults()
+        let windows = ["normal", "pinned", "snoozed"].map(makeWindow)
+        defer { windows.forEach { $0.close() } }
+        let items = [item("normal"), item("pinned"), item("snoozed")]
+        let model = makeModel(defaults: defaults.defaults,
+            items: Dictionary(uniqueKeysWithValues: zip(windows.map(ObjectIdentifier.init), items)))
+        windows[0].orderFront(nil)
+        windows[0].addTabbedWindow(windows[1], ordered: .above)
+        windows[1].addTabbedWindow(windows[2], ordered: .above)
+        model.bind(to: try #require(windows[0].tabGroup))
+        model.setPinned(true, for: model.tabs[1])
+        model.snooze(model.tabs[2], until: .distantFuture)
+        #expect(model.navigationTabs.map(\.id) == [windows[1], windows[0]].map(ObjectIdentifier.init))
+        #expect(model.snoozedTabs.map(\.id) == [ObjectIdentifier(windows[2])])
+        #expect(model.filteredTabs.count == 2)
+        model.searchText = "snoozed"
+        #expect(model.filteredTabs.map(\.id) == [ObjectIdentifier(windows[2])])
+        #expect(items[2].lifecycle.isSnoozed)
+        model.searchText = ""
+        let selected = windows[0].tabGroup?.selectedWindow
+        model.wakeDueTabs(now: .distantFuture)
+        model.refresh()
+        #expect(model.snoozedTabs.isEmpty)
+        #expect(model.normalTabs.first?.id == ObjectIdentifier(windows[2]))
+        #expect(items[2].lifecycle.wokeAt == .distantFuture)
+        #expect(windows[0].tabGroup?.selectedWindow === selected)
+    }
+}
+
 // MARK: Shortcut Dispatch
 
 struct TerminalTabSidebarShortcutTests {
