@@ -377,6 +377,74 @@ struct TerminalTabSidebarItemTests {
     }
 }
 
+// MARK: Icons
+
+@MainActor
+struct TerminalTabSidebarIconTests {
+    // Keep sampling independent of WindowServer occlusion notifications.
+    private final class OnScreenWindow: NSWindow {
+        override var occlusionState: NSWindow.OcclusionState { .visible }
+    }
+
+    @Test func focusChangeRefreshesIconWithoutWaitingForTimer() async throws {
+        let appDelegate = try #require(NSApp.delegate as? AppDelegate)
+        var config = Ghostty.SurfaceConfiguration()
+        config.command = "/bin/sleep 60"
+        let controller = TerminalController(appDelegate.ghostty, withBaseConfig: config)
+        let surface = try #require(controller.surfaceTree.first)
+        let window = OnScreenWindow(contentRect: .zero, styleMask: [], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        controller.window = window
+        let model = controller.sidebarModel
+        let tabItem = controller.sidebarItem
+        tabItem.foregroundPID = { ProcessInfo.processInfo.processIdentifier }
+        tabItem.icon = .codex
+
+        // A provisional model has no sampling timer.
+        model.provisionalWindow = window
+        model.setVisible(true, persist: false)
+        try #require(model.tabs.first?.item === tabItem)
+        try #require(model.tabGroup == nil)
+
+        controller.focusedSurfaceDidChange(to: surface)
+        await finishPendingIconResolutions()
+
+        #expect(tabItem.icon == .terminal)
+    }
+
+    @Test func ignoresIconResolvedForPreviousForegroundProcess() async throws {
+        let defaults = TemporaryDefaults()
+        let window = OnScreenWindow(contentRect: .zero, styleMask: [], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let tabItem = item("terminal")
+        var pid: pid_t? = ProcessInfo.processInfo.processIdentifier
+        tabItem.foregroundPID = { pid }
+        tabItem.icon = .pi
+        let model = makeModel(defaults: defaults.defaults, items: [ObjectIdentifier(window): tabItem])
+        model.provisionalWindow = window
+        model.setVisible(true, persist: false)
+
+        model.sampleIcons()
+        pid = nil
+        await finishPendingIconResolutions()
+
+        #expect(tabItem.icon == .pi)
+
+        model.sampleIcons()
+        #expect(tabItem.icon == .terminal)
+    }
+
+    private func finishPendingIconResolutions() async {
+        await withCheckedContinuation { continuation in
+            TerminalAppIconResolver.shared.resolve(pids: [ProcessInfo.processInfo.processIdentifier]) { _ in
+                continuation.resume()
+            }
+        }
+    }
+}
+
 // MARK: Shortcut Dispatch
 
 struct TerminalTabSidebarShortcutTests {

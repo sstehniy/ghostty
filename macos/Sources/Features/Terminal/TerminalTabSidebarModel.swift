@@ -410,6 +410,7 @@ final class TerminalTabSidebarModel: ObservableObject {
         let pids = Set(pidsByItem.compactMap(\.1))
         TerminalAppIconResolver.shared.resolve(pids: pids) { icons in
             for (item, pid) in pidsByItem {
+                guard item.foregroundPID() == pid else { continue }
                 let icon = pid.flatMap { icons[$0] } ?? .terminal
                 if item.icon != icon { item.icon = icon }
             }

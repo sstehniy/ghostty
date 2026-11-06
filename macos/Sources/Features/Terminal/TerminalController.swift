@@ -1573,6 +1573,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     override func focusedSurfaceDidChange(to: Ghostty.SurfaceView?) {
         super.focusedSurfaceDidChange(to: to)
+        sidebarModel.sampleIcons()
 
         // We always cancel our event listener
         surfaceAppearanceCancellables.removeAll()
