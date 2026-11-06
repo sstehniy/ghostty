@@ -231,6 +231,7 @@ struct TerminalTabSidebarView: View {
     }
 
     static let rowSpacing: CGFloat = 4
+    private static let listVerticalPadding: CGFloat = 6
     private static let rowStep = TerminalTabSidebarRow.height + rowSpacing
     private static let settleDuration: TimeInterval = 0.16
     private static let settleAnimation = Animation.easeOut(duration: settleDuration)
@@ -298,7 +299,8 @@ struct TerminalTabSidebarView: View {
     }
 
     private func shelfHeight(_ count: Int, available: CGFloat) -> CGFloat {
-        min(CGFloat(count) * Self.rowStep + 10, max(0, available * 0.3))
+        let contentHeight = CGFloat(count) * Self.rowStep - Self.rowSpacing + 2 * Self.listVerticalPadding
+        return min(contentHeight, max(0, available * 0.3))
     }
 
     private func sectionLabel(_ title: String) -> some View {
@@ -324,8 +326,7 @@ struct TerminalTabSidebarView: View {
                     }
                 }
                 .padding(.horizontal, 6)
-                .padding(.top, 2)
-                .padding(.bottom, 8)
+                .padding(.vertical, Self.listVerticalPadding)
             }
             .onAppear { scroll(proxy, to: model.selectedID, animated: false) }
             .onChange(of: model.selectedID) { id in scroll(proxy, to: id, animated: true) }
