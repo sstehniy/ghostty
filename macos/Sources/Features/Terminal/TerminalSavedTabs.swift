@@ -167,6 +167,8 @@ final class TerminalSavedTabs {
                         let frame = NSRectFromString(record.frame)
                         if frame.width >= 200, frame.height >= 100 { window.setFrame(frame, display: false) }
                         window.constrainToScreen()
+                        // AppKit needs a presented parent before it can display newly attached tabs.
+                        window.orderFront(nil)
                     }
                     controller.reconnectSidebarModel()
                     restored.append((record, controller))

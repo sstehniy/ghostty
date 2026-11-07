@@ -34,6 +34,50 @@ final class GhosttyTitlebarTabsUITests: GhosttyCustomConfigCase {
     }
 
     @MainActor
+    func testRestoredPinnedAndFreshNormalTabsStayVisible() throws {
+        try updateConfig("""
+        macos-titlebar-style = tabs
+        macos-tab-layout = vertical
+        window-width = 145
+        window-height = 40
+        window-save-state = never
+        command = /bin/sh
+        """)
+        let suite = "GHOSTTY_RESTORATION_TEST_\(UUID().uuidString)"
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(suite, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let app = try ghosttyApplication(defaultsSuite: suite)
+        defer {
+            app.terminate()
+            try? FileManager.default.removeItem(at: directory)
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        }
+        let paneID = UUID().uuidString
+        let state: [String: Any] = [
+            "focusedSurface": paneID,
+            "surfaceTree": ["version": 1, "root": ["view": [
+                "uuid": paneID, "pwd": directory.path, "title": "Saved pinned tab", "isUserSetTitle": true
+            ]]],
+            "tabColor": 0
+        ]
+        let terminal = try JSONSerialization.data(withJSONObject: state)
+        let archive: [String: Any] = ["version": 1, "tabs": [[
+            "id": UUID().uuidString, "groupID": UUID().uuidString, "order": 0, "selected": false,
+            "lifecycle": ["isPinned": true], "terminal": terminal.base64EncodedString(),
+            "frame": "{{20,20},{900,700}}", "sidebarWidth": 280, "snoozedExpanded": false
+        ]]]
+        try JSONSerialization.data(withJSONObject: archive).write(to: directory.appendingPathComponent("saved-tabs.json"))
+        app.launch()
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.windows.firstMatch.wait(for: \.isHittable, toEqual: true, timeout: 3))
+        for _ in 0..<2 {
+            app.typeKey("]", modifierFlags: [.command, .shift])
+            XCTAssertTrue(app.windows.firstMatch.wait(for: \.isHittable, toEqual: true, timeout: 3))
+        }
+    }
+
+    @MainActor
     func testTabsGeometryInNormalWindow() throws {
         let app = try ghosttyApplication()
         app.launch()
