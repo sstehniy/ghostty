@@ -279,6 +279,23 @@ struct TerminalDormantRestoreTests {
         panes[0].startDeferredTerminal()
         #expect(panes[1].surfaceModel == nil)
     }
+
+    /// The renderer starts visible. A surface created before it has a window (Cmd+T)
+    /// must not be reported occluded, but must record that initial visible state so
+    /// the controller's next sync reports a hidden window.
+    @MainActor @Test func windowlessSurfaceTracksRendererInitialVisibility() throws {
+        let app = try #require((NSApp.delegate as? AppDelegate)?.ghostty.app)
+        let view = Ghostty.SurfaceView(app)
+        #expect(view.window == nil)
+        #expect(view.surface != nil)
+        #expect(view.isWindowVisible)
+
+        let deferred = Ghostty.SurfaceView(app, deferTerminal: true)
+        #expect(deferred.surface == nil)
+        deferred.startDeferredTerminal()
+        #expect(deferred.surface != nil)
+        #expect(deferred.isWindowVisible)
+    }
 }
 
 struct TerminalAgentResumeTests {

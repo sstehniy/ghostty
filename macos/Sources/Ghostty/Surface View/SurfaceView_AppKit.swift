@@ -332,7 +332,10 @@ extension Ghostty {
             // after a deferred start). Reporting "occluded" before the renderer has
             // built its first cells stops it from building them, and a main-thread
             // layer draw in between then renders the uninitialized grid as random
-            // artifacts.
+            // artifacts. Do record the renderer's initial visible state, so the
+            // controller's next sync reports a hidden window (e.g. a split added
+            // to an inactive tab) instead of assuming it was already reported.
+            isWindowVisible = true
             updateTrackingAreas()
             registerForDraggedTypes(Array(Self.dropTypes))
         }
