@@ -486,6 +486,22 @@ extension Ghostty {
             return MacHidden(rawValue: str) ?? .never
         }
 
+        var sshInheritSession: Bool {
+            guard let config else { return true }
+            var value = true
+            let key = "ssh-inherit-session"
+            _ = ghostty_config_get(config, &value, key, UInt(key.utf8.count))
+            return value
+        }
+
+        var waitAfterCommand: Bool {
+            guard let config else { return false }
+            var value = false
+            let key = "wait-after-command"
+            _ = ghostty_config_get(config, &value, key, UInt(key.utf8.count))
+            return value
+        }
+
         var floatWidth: Double {
             guard let config else { return 0.4 }
             var value: UInt32 = 40

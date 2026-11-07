@@ -623,7 +623,7 @@ struct TerminalTabSidebarRow: View {
                     Label("Woke", systemImage: "alarm")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(.orange)
-                } else if let directory = item.displayDirectory {
+                } else if let directory = item.remoteLabel ?? item.displayDirectory {
                     Text(directory)
                         .font(.system(size: 11))
                         .foregroundColor(foreground.opacity(isSelected ? 0.5 : 0.4))
@@ -806,16 +806,19 @@ struct TerminalTabSidebarRow: View {
     }
 
     private var tooltip: String {
-        [title, item.displayDirectory, item.restorationIssue].compactMap { $0 }.joined(separator: "\n")
+        [title, item.remoteLabel ?? item.displayDirectory, item.restorationIssue].compactMap { $0 }.joined(separator: "\n")
     }
 
     private var accessibilityLabel: String {
         var parts = [title]
-        if let directory = item.displayDirectory { parts.append(directory) }
+        if !item.lifecycle.isSnoozed, item.lifecycle.wokeAt == nil,
+           let directory = item.remoteLabel ?? item.displayDirectory { parts.append(directory) }
         if item.icon != .terminal { parts.append(item.icon.accessibilityName) }
         if item.lifecycle.isPinned { parts.append("Pinned") }
         if let until = item.lifecycle.snoozedUntil {
             parts.append("Snoozed until \(until.formatted(date: .abbreviated, time: .shortened))")
+        } else if item.lifecycle.wokeAt != nil {
+            parts.append("Woke")
         }
         if let issue = item.restorationIssue { parts.append(issue) }
         return parts.joined(separator: ", ")

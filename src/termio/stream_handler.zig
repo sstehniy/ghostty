@@ -1583,7 +1583,11 @@ pub const StreamHandler = struct {
             },
         };
         if (!host_valid) {
-            log.warn("OSC 7 host ({s}) must be local", .{host});
+            log.debug("OSC 7 host ({s}) is remote", .{host});
+            const path = remoteOsc7Path(uri, self.alloc) orelse return;
+            defer self.alloc.free(path);
+            const req = try apprt.surface.Message.WriteReq.init(self.alloc, path);
+            self.surfaceMessageWriter(.{ .remote_pwd_change = req });
             return;
         }
 
@@ -1953,6 +1957,39 @@ pub const StreamHandler = struct {
         self.surfaceMessageWriter(.{ .progress_report = report });
     }
 };
+
+/// Return an owned remote path without letting it become the local cwd.
+fn remoteOsc7Path(uri: std.Uri, alloc: Allocator) ?[]const u8 {
+    var buffer: [1024]u8 = undefined;
+    const path = uri.path.toRaw(&buffer) catch return null;
+    if (path.len == 0 or path.len > 1024 or path[0] != '/' or std.mem.indexOfScalar(u8, path, '\\') != null) return null;
+    const utf8 = std.unicode.Utf8View.init(path) catch return null;
+    var it = utf8.iterator();
+    while (it.nextCodepoint()) |cp| {
+        if (cp < 0x20 or (cp >= 0x7f and cp <= 0x9f)) return null;
+    }
+    return alloc.dupe(u8, path) catch null;
+}
+
+test "remoteOsc7Path validates and decodes remote directories" {
+    const testing = std.testing;
+    for ([_][]const u8{ "/srv/a%20b", "/srv/a b" }) |path| {
+        const uri: std.Uri = .{ .scheme = "file", .path = .{ .percent_encoded = path } };
+        const result = remoteOsc7Path(uri, testing.allocator).?;
+        defer testing.allocator.free(result);
+        try testing.expectEqualStrings("/srv/a b", result);
+    }
+    for ([_][]const u8{ "", "relative", "/a%00b", "/a%0Ab", "/a%C2%85b", "/a%5Cb" }) |path| {
+        const uri: std.Uri = .{ .scheme = "file", .path = .{ .percent_encoded = path } };
+        try testing.expect(remoteOsc7Path(uri, testing.allocator) == null);
+    }
+    var long: [1025]u8 = @splat('a');
+    long[0] = '/';
+    const accepted = remoteOsc7Path(.{ .scheme = "file", .path = .{ .raw = long[0..1024] } }, testing.allocator).?;
+    defer testing.allocator.free(accepted);
+    try testing.expectEqual(@as(usize, 1024), accepted.len);
+    try testing.expect(remoteOsc7Path(.{ .scheme = "file", .path = .{ .raw = &long } }, testing.allocator) == null);
+}
 
 /// Returns the raw (percent-decoded) host of an OSC 7 URI.
 ///

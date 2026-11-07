@@ -5,10 +5,10 @@ import SwiftUI
 /// The icon shown for a tab in the tab sidebar. This is derived from the foreground
 /// process of the tab's last focused pane.
 ///
-/// Only local processes can be identified. Programs running remotely (e.g. over
-/// SSH) appear as the local `ssh` process and therefore fall back to `.terminal`.
+/// SSH connections show a remote badge; programs inside them cannot be identified.
 enum TerminalAppIcon: String, CaseIterable, Equatable {
     case terminal
+    case remote
     case claude
     case codex
     case pi
@@ -23,7 +23,7 @@ enum TerminalAppIcon: String, CaseIterable, Equatable {
     /// The asset catalog image for this icon, or nil when a system symbol is used.
     var assetName: String? {
         switch self {
-        case .terminal: return nil
+        case .terminal, .remote: return nil
         case .claude: return "TabIconClaude"
         case .codex: return "TabIconCodex"
         case .pi: return "TabIconPi"
@@ -42,17 +42,18 @@ enum TerminalAppIcon: String, CaseIterable, Equatable {
     var isTemplate: Bool {
         switch self {
         case .opencode, .amp, .copilot, .cursor: return true
-        case .terminal, .claude, .codex, .pi, .gemini, .qwen, .kiro: return false
+        case .terminal, .remote, .claude, .codex, .pi, .gemini, .qwen, .kiro: return false
         }
     }
 
     /// The SF Symbol used when no bundled asset exists.
-    var systemSymbolName: String { "apple.terminal" }
+    var systemSymbolName: String { self == .remote ? "globe" : "apple.terminal" }
 
     /// A human readable name used for accessibility.
     var accessibilityName: String {
         switch self {
         case .terminal: return "Terminal"
+        case .remote: return "SSH"
         case .claude: return "Claude"
         case .codex: return "Codex"
         case .pi: return "Pi"
@@ -91,6 +92,7 @@ extension TerminalAppIcon {
     ///   - executablePath: The resolved executable path, if known.
     ///   - arguments: The full argv, including argv[0].
     static func classify(executablePath: String?, arguments: [String]) -> TerminalAppIcon {
+        if TerminalSSHDetection.isSSH(executablePath: executablePath, arguments: arguments) { return .remote }
         var candidates: [String] = []
         if let executablePath { candidates.append(executablePath) }
         if let argv0 = arguments.first { candidates.append(argv0) }
@@ -202,8 +204,8 @@ extension TerminalAppIcon {
 // MARK: Process Inspection
 
 extension TerminalAppIcon {
-    /// Reads process information needed for classification. These calls are
-    /// blocking system calls and must not run on the main thread.
+    /// Reads process information for classification and on-demand SSH snapshots.
+    /// Sidebar sampling runs these blocking calls off the main thread.
     enum ProcessInspector {
         struct Identity: Hashable {
             let pid: pid_t
@@ -218,6 +220,22 @@ extension TerminalAppIcon {
             guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
             let start = UInt64(info.pbi_start_tvsec) * 1_000_000 + UInt64(info.pbi_start_tvusec)
             return Identity(pid: pid, startTime: start)
+        }
+
+        static func parentPID(pid: pid_t) -> pid_t? {
+            var info = proc_bsdinfo()
+            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+            return pid_t(exactly: info.pbi_ppid)
+        }
+
+        static func childPIDs(pid: pid_t) -> [pid_t] {
+            let bytes = proc_listchildpids(pid, nil, 0)
+            guard bytes > 0 else { return [] }
+            var pids = [pid_t](repeating: 0, count: Int(bytes) / MemoryLayout<pid_t>.size + 16)
+            let count = pids.withUnsafeMutableBytes { proc_listchildpids(pid, $0.baseAddress, Int32($0.count)) }
+            guard count > 0 else { return [] }
+            return pids.prefix(Int(count) / MemoryLayout<pid_t>.size).filter { $0 > 0 }
         }
 
         static func executablePath(pid: pid_t) -> String? {
@@ -277,7 +295,7 @@ extension TerminalAppIcon {
 /// per process so that repeated sampling is cheap.
 ///
 /// Process arguments may contain secrets, so they are never logged or retained;
-/// only the resulting classification is cached.
+/// only the resulting classification and SSH display destination are cached.
 final class TerminalAppIconResolver {
     static let shared = TerminalAppIconResolver()
 
@@ -290,13 +308,23 @@ final class TerminalAppIconResolver {
         let executablePath: String?
     }
 
+    struct Resolution {
+        var icon: TerminalAppIcon = .terminal
+        var destination: String?
+
+        func remoteLabel(directory: String?) -> String? {
+            guard let destination else { return nil }
+            return directory.map { destination + ":" + $0 } ?? destination
+        }
+    }
+
     /// Only accessed on `queue`.
-    private var cache: [CacheKey: TerminalAppIcon] = [:]
+    private var cache: [CacheKey: Resolution] = [:]
 
     private static let cacheLimit = 256
 
     /// Resolve icons for the given pids. The completion is called on the main queue.
-    func resolve(pids: Set<pid_t>, completion: @escaping ([pid_t: TerminalAppIcon]) -> Void) {
+    func resolve(pids: Set<pid_t>, completion: @escaping ([pid_t: Resolution]) -> Void) {
         guard !pids.isEmpty else {
             completion([:])
             return
@@ -305,7 +333,7 @@ final class TerminalAppIconResolver {
         queue.async { [weak self] in
             guard let self else { return }
 
-            var result: [pid_t: TerminalAppIcon] = [:]
+            var result: [pid_t: Resolution] = [:]
             for pid in pids {
                 result[pid] = self.resolve(pid: pid)
             }
@@ -315,19 +343,20 @@ final class TerminalAppIconResolver {
     }
 
     /// Must be called on `queue`.
-    private func resolve(pid: pid_t) -> TerminalAppIcon {
-        guard let identity = TerminalAppIcon.ProcessInspector.identity(pid: pid) else { return .terminal }
+    private func resolve(pid: pid_t) -> Resolution {
+        guard let identity = TerminalAppIcon.ProcessInspector.identity(pid: pid) else { return Resolution() }
         let executablePath = TerminalAppIcon.ProcessInspector.executablePath(pid: pid)
         let key = CacheKey(identity: identity, executablePath: executablePath)
         if let cached = cache[key] { return cached }
 
-        let icon = TerminalAppIcon.classify(
-            executablePath: executablePath,
-            arguments: TerminalAppIcon.ProcessInspector.arguments(pid: pid))
+        let arguments = TerminalAppIcon.ProcessInspector.arguments(pid: pid)
+        let result = Resolution(
+            icon: TerminalAppIcon.classify(executablePath: executablePath, arguments: arguments),
+            destination: TerminalSSHDetection.destination(executablePath: executablePath, arguments: arguments))
 
         if cache.count >= Self.cacheLimit { cache.removeAll(keepingCapacity: true) }
-        cache[key] = icon
-        return icon
+        cache[key] = result
+        return result
     }
 }
 

@@ -2106,6 +2106,13 @@ keybind: Keybinds = .{},
 /// working directory will be used (the `working-directory` option).
 @"split-inherit-working-directory": bool = true,
 
+/// Reconnect to the foreground SSH session in new tabs, splits and floating
+/// panes. Authentication uses your ssh_config, keys and agent as usual; no
+/// remote session is kept alive. Use new_tab_local, new_split_local or
+/// new_float_local to open a local shell instead. Disabling this also disables
+/// SSH reconnects when waking saved tabs. Only supported on macOS.
+@"ssh-inherit-session": bool = true,
+
 /// If true, new windows and tabs will inherit the font size of the previously
 /// focused window. If no window was previously focused, the default font size
 /// will be used. If this is false, the default font size specified in the
@@ -11286,6 +11293,16 @@ test "scrollback limits" {
         std.math.maxInt(usize),
         cfg.@"scrollback-limit-lines".value,
     );
+}
+
+test "ssh-inherit-session defaults and parsing" {
+    const testing = std.testing;
+    var cfg = try Config.default(testing.allocator);
+    defer cfg.deinit();
+    try testing.expect(cfg.@"ssh-inherit-session");
+    var it: TestIterator = .{ .data = &.{"--ssh-inherit-session=false"} };
+    try cfg.loadIter(testing.allocator, &it);
+    try testing.expect(!cfg.@"ssh-inherit-session");
 }
 
 test "floating pane dimensions" {

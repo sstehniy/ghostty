@@ -170,8 +170,15 @@ class BaseTerminalController: NSWindowController,
             else { return nil }
             return pid_t(exactly: pid)
         }
+        item.remoteDirectory = { [weak self] in self?.treeFocusSurface?.surfaceModel?.remotePwd }
         return item
     }()
+
+    @IBAction func newLocalTab(_ sender: Any?) {
+        guard let surface = focusedSurface?.surface else { return }
+        let action = "new_tab_local"
+        ghostty_surface_binding_action(surface, action, UInt(action.utf8.count))
+    }
 
     /// The time that undo/redo operations that contain running ptys are valid for.
     var undoExpiration: Duration {

@@ -190,6 +190,7 @@ class AppDelegate: NSObject,
 
     @MainActor private lazy var menuShortcutManager = Ghostty.MenuShortcutManager()
     private var floatingPaneMenuItems: [String: NSMenuItem] = [:]
+    private var newLocalTabMenuItem: NSMenuItem?
 
     override init() {
 #if DEBUG
@@ -1058,6 +1059,10 @@ class AppDelegate: NSObject,
         )
     }
 
+    @IBAction func newLocalTab(_ sender: Any?) {
+        newTab(sender)
+    }
+
     @IBAction func closeAllWindows(_ sender: Any?) {
         TerminalController.closeAllWindows()
         AboutController.shared.hide()
@@ -1243,10 +1248,18 @@ extension AppDelegate {
 
         menuShortcutManager.reset()
 
+        if newLocalTabMenuItem == nil, let tabItem = menuNewTab, let menu = tabItem.menu {
+            let item = NSMenuItem(title: "New Local Tab", action: #selector(BaseTerminalController.newLocalTab), keyEquivalent: "")
+            menu.insertItem(item, at: menu.index(of: tabItem) + 1)
+            newLocalTabMenuItem = item
+        }
+        syncMenuShortcut(config, action: "new_tab_local", menuItem: newLocalTabMenuItem)
+
         if floatingPaneMenuItems.isEmpty, let viewMenu = menuCommandPalette?.menu {
             let submenu = NSMenu(title: "Floating Panes")
             let actions = [
                 ("new_float", "New Floating Pane"),
+                ("new_float_local", "New Local Float"),
                 ("focus_float:next", "Focus Next Floating Pane"),
                 ("focus_float:previous", "Focus Previous Floating Pane"),
                 ("focus_float:tree", "Focus Split Tree"),

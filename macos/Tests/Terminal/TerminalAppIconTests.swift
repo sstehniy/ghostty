@@ -53,7 +53,6 @@ struct TerminalAppIconTests {
 
     @Test(arguments: [
         ("/bin/zsh", ["-zsh"]),
-        ("/usr/bin/ssh", ["ssh", "claude.example.com"]),
         ("/usr/bin/vim", ["vim", "claude.md"]),
         ("/opt/homebrew/bin/node", ["node", "server.js", "--name", "claude"]),
         ("/opt/homebrew/bin/node", ["node", "server.js"]),
@@ -64,6 +63,21 @@ struct TerminalAppIconTests {
     ])
     func unrecognizedProgramsFallBackToTerminal(path: String, argv: [String]) {
         #expect(TerminalAppIcon.classify(executablePath: path, arguments: argv) == .terminal)
+    }
+
+    @Test(arguments: [
+        ["ssh", "host"], ["ssh", "-N", "host"], ["ssh", "host", "ls"],
+        ["ghostty", "+ssh", "--terminfo=false", "--", "host"],
+    ])
+    func sshShowsRemoteBadge(argv: [String]) {
+        #expect(TerminalAppIcon.classify(executablePath: nil, arguments: argv) == .remote)
+    }
+
+    @Test func remoteLabelsUseRemoteNotLocalDirectory() {
+        let result = TerminalAppIconResolver.Resolution(icon: .remote, destination: "me@host")
+        #expect(result.remoteLabel(directory: nil) == "me@host")
+        #expect(result.remoteLabel(directory: "/srv/a b") == "me@host:/srv/a b")
+        #expect(TerminalAppIconResolver.Resolution().remoteLabel(directory: "/local") == nil)
     }
 
     @Test func unknownProcessFallsBackToTerminal() {

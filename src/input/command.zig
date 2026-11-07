@@ -428,6 +428,12 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = i18n.N_("Open a new tab."),
         }},
 
+        .new_tab_local => comptime &.{.{
+            .action = .new_tab_local,
+            .title = "New Local Tab",
+            .description = "Open a tab without reconnecting to SSH.",
+        }},
+
         .move_tab => comptime &.{
             .{
                 .action = .{ .move_tab = -1 },
@@ -494,6 +500,13 @@ fn actionCommands(action: Action.Key) []const Command {
             },
         },
 
+        .new_split_local => comptime &.{
+            .{ .action = .{ .new_split_local = .left }, .title = "New Local Split Left", .description = "Split locally to the left." },
+            .{ .action = .{ .new_split_local = .right }, .title = "New Local Split Right", .description = "Split locally to the right." },
+            .{ .action = .{ .new_split_local = .up }, .title = "New Local Split Up", .description = "Split locally up." },
+            .{ .action = .{ .new_split_local = .down }, .title = "New Local Split Down", .description = "Split locally down." },
+        },
+
         .goto_split => comptime &.{
             .{
                 .action = .{ .goto_split = .previous },
@@ -550,6 +563,11 @@ fn actionCommands(action: Action.Key) []const Command {
             .action = .new_float,
             .title = i18n.N_("New Floating Pane"),
             .description = i18n.N_("Create a floating terminal pane in this tab."),
+        }},
+        .new_float_local => comptime &.{.{
+            .action = .new_float_local,
+            .title = "New Local Float",
+            .description = "Open a floating pane without reconnecting to SSH.",
         }},
         .focus_float => comptime &.{
             .{

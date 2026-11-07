@@ -379,6 +379,10 @@ pub const Action = union(Key) {
     /// Toggle floating pane visibility.
     toggle_floats_visible,
 
+    new_tab_local,
+    new_split_local: SplitDirection,
+    new_float_local,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -456,6 +460,9 @@ pub const Action = union(Key) {
         focus_float,
         toggle_float_dock,
         toggle_floats_visible,
+        new_tab_local,
+        new_split_local,
+        new_float_local,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");

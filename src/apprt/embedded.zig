@@ -2019,6 +2019,12 @@ pub const CAPI = struct {
         return surface.core_surface.getProcessInfo(.foreground_pid) orelse 0;
     }
 
+    /// The caller frees this string with ghostty_string_free.
+    export fn ghostty_surface_remote_pwd(surface: *Surface) String {
+        const pwd = surface.core_surface.remotePwd(global.alloc()) catch return .empty;
+        return .fromSlice(pwd orelse return .empty);
+    }
+
     /// Returns the PTY name for the surface. The returned string must be
     /// freed by the caller via ghostty_string_free.
     export fn ghostty_surface_tty_name(surface: *Surface) String {

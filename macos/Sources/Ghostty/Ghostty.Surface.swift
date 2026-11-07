@@ -136,6 +136,11 @@ extension Ghostty {
             return Int(exactly: pid)
         }
 
+        var remotePwd: String? {
+            let path = AllocatedString(ghostty_surface_remote_pwd(surface)).string
+            return path.isEmpty ? nil : path
+        }
+
         /// The PTY device name for this surface.
         var ttyName: String? {
             let ttyName = AllocatedString(ghostty_surface_tty_name(surface)).string

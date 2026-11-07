@@ -156,6 +156,9 @@ config_conditional_state: configpkg.ConditionalState,
 /// This is used to determine if we need to confirm, hold open, etc.
 child_exited: bool = false,
 
+remote_pwd: ?[]u8 = null,
+remote_pwd_pid: u64 = 0,
+
 /// A creation-time override that survives configuration reloads.
 close_on_exit: bool = false,
 
@@ -878,6 +881,8 @@ pub fn deinit(self: *Surface) void {
     self.alloc.destroy(self.renderer_state.mutex);
     self.config.deinit();
 
+    if (self.remote_pwd) |path| self.alloc.free(path);
+
     log.info("surface closed id={x}", .{self.id});
 }
 
@@ -1123,8 +1128,19 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             },
         },
 
+        .remote_pwd_change => |w| {
+            defer w.deinit();
+            const copy = try self.alloc.dupe(u8, w.slice());
+            if (self.remote_pwd) |path| self.alloc.free(path);
+            self.remote_pwd = copy;
+            self.remote_pwd_pid = self.getProcessInfo(.foreground_pid) orelse 0;
+        },
+
         .pwd_change => |w| {
             defer w.deinit();
+            if (self.remote_pwd) |path| self.alloc.free(path);
+            self.remote_pwd = null;
+            self.remote_pwd_pid = 0;
 
             var stack_buf: [256]u8 = undefined;
             var stack: std.heap.BufferFirstAllocator = .init(&stack_buf, self.alloc);
@@ -5481,9 +5497,9 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             v,
         ),
 
-        .new_tab => return try self.rt_app.performAction(
+        inline .new_tab, .new_tab_local => |_, tag| return try self.rt_app.performAction(
             .{ .surface = self },
-            .new_tab,
+            @field(apprt.Action.Key, @tagName(tag)),
             {},
         ),
 
@@ -5525,9 +5541,9 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             {},
         ),
 
-        .new_split => |direction| return try self.rt_app.performAction(
+        inline .new_split, .new_split_local => |direction, tag| return try self.rt_app.performAction(
             .{ .surface = self },
-            .new_split,
+            @field(apprt.Action.Key, @tagName(tag)),
             switch (direction) {
                 .right => .right,
                 .left => .left,
@@ -5586,7 +5602,7 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             {},
         ),
 
-        .new_float => return try self.rt_app.performAction(.{ .surface = self }, .new_float, {}),
+        inline .new_float, .new_float_local => |_, tag| return try self.rt_app.performAction(.{ .surface = self }, @field(apprt.Action.Key, @tagName(tag)), {}),
         .focus_float => |direction| return try self.rt_app.performAction(
             .{ .surface = self },
             .focus_float,
@@ -6715,6 +6731,14 @@ fn presentSurface(self: *Surface) !void {
         .present_terminal,
         {},
     );
+}
+
+/// Return an owned remote path only for the process that reported it.
+pub fn remotePwd(self: *Surface, alloc: Allocator) !?[]const u8 {
+    const path = self.remote_pwd orelse return null;
+    const pid = self.getProcessInfo(.foreground_pid) orelse return null;
+    if (pid == 0 or pid != self.remote_pwd_pid) return null;
+    return try alloc.dupe(u8, path);
 }
 
 /// Get information about the process(es) running within the surface. Returns

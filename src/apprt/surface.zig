@@ -134,6 +134,9 @@ pub const Message = union(enum) {
     /// The terminal has reported a change in the working directory.
     pwd_change: WriteReq,
 
+    /// A non-local OSC 7 path, never used as the local working directory.
+    remote_pwd_change: WriteReq,
+
     /// The terminal encountered a bell character.
     ring_bell,
 

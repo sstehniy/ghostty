@@ -231,6 +231,7 @@ extension Ghostty {
 
         private var deferredConfiguration: SurfaceConfiguration?
         private var pendingRestoration: TerminalAgentRestoration?
+        private var pendingSSHRestoration: TerminalSSHSession?
         private var resumeStartedAt: Date?
         private var resumeToken: UUID?
         @Published var savedSessionIssue: String?
@@ -246,6 +247,7 @@ extension Ghostty {
             guard var config = deferredConfiguration,
                   let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return }
             deferredConfiguration = nil
+            var resumedAgent = false
             if let restoration = pendingRestoration {
                 savedSessionIssue = restoration.issue
                 if let session = restoration.session {
@@ -263,11 +265,19 @@ extension Ghostty {
                         config.environmentVariables["GHOSTTY_AGENT_RESUME"] = json
                         config.initialInput = "ghostty-resume-saved-agent \(token.uuidString)\n"
                         resumeStartedAt = Date()
+                        resumedAgent = true
                     } else {
                         savedSessionIssue = "The saved agent, conversation, directory, or resume command is unavailable. Nothing was restarted."
                     }
                 }
             }
+            if !resumedAgent, let appConfig = (NSApp.delegate as? AppDelegate)?.ghostty.config,
+               appConfig.sshInheritSession, let session = pendingSSHRestoration {
+                let shell = getpwuid(getuid())?.pointee.pw_shell.map { String(cString: $0) }
+                TerminalSSHReconnect.apply(session, sshExecutable: session.program.hasPrefix("/") ? session.program : "/usr/bin/ssh",
+                                           localShell: shell, to: &config, waitAfterCommand: appConfig.waitAfterCommand)
+            }
+            pendingSSHRestoration = nil
             if let cwd = config.workingDirectory, !FileManager.default.fileExists(atPath: cwd) {
                 config.workingDirectory = FileManager.default.homeDirectoryForCurrentUser.path
                 savedSessionIssue = "The saved working directory no longer exists. Opened a fresh shell in your home directory."
@@ -2000,6 +2010,7 @@ extension Ghostty {
             case title
             case isUserSetTitle
             case agentRestoration
+            case sshRestoration
         }
 
         required convenience init(from decoder: Decoder) throws {
@@ -2021,6 +2032,11 @@ extension Ghostty {
             self.init(app, baseConfig: config, uuid: uuid, deferTerminal: durable)
             if durable {
                 pendingRestoration = try container.decodeIfPresent(TerminalAgentRestoration.self, forKey: .agentRestoration)
+                if pendingRestoration?.session == nil,
+                   let session = try? container.decodeIfPresent(TerminalSSHSession.self, forKey: .sshRestoration),
+                   session.isValid {
+                    pendingSSHRestoration = session
+                }
                 self.pwd = config.workingDirectory
             }
 
@@ -2041,7 +2057,12 @@ extension Ghostty {
             try container.encode(title, forKey: .title)
             try container.encode(titleFromTerminal != nil, forKey: .isUserSetTitle)
             if encoder.userInfo[.durableTabSnapshot] as? Bool == true {
-                try container.encodeIfPresent(agentRestoration, forKey: .agentRestoration)
+                let agent = agentRestoration
+                try container.encodeIfPresent(agent, forKey: .agentRestoration)
+                if agent?.session == nil {
+                    try container.encodeIfPresent(pendingSSHRestoration ?? TerminalSSHDetection.session(for: self),
+                                                  forKey: .sshRestoration)
+                }
             }
         }
     }

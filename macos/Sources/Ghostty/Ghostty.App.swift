@@ -619,8 +619,14 @@ extension Ghostty {
             case GHOSTTY_ACTION_NEW_TAB:
                 newTab(app, target: target)
 
+            case GHOSTTY_ACTION_NEW_TAB_LOCAL:
+                newTab(app, target: target, inheritSSH: false)
+
             case GHOSTTY_ACTION_NEW_SPLIT:
                 newSplit(app, target: target, direction: action.action.new_split)
+
+            case GHOSTTY_ACTION_NEW_SPLIT_LOCAL:
+                newSplit(app, target: target, direction: action.action.new_split_local, inheritSSH: false)
 
             case GHOSTTY_ACTION_CLOSE_TAB:
                 closeTab(app, target: target, mode: action.action.close_tab_mode)
@@ -655,7 +661,7 @@ extension Ghostty {
             case GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM:
                 return toggleSplitZoom(app, target: target)
 
-            case GHOSTTY_ACTION_NEW_FLOAT, GHOSTTY_ACTION_FOCUS_FLOAT,
+            case GHOSTTY_ACTION_NEW_FLOAT, GHOSTTY_ACTION_NEW_FLOAT_LOCAL, GHOSTTY_ACTION_FOCUS_FLOAT,
                  GHOSTTY_ACTION_TOGGLE_FLOAT_DOCK, GHOSTTY_ACTION_TOGGLE_FLOATS_VISIBLE:
                 guard target.tag == GHOSTTY_TARGET_SURFACE,
                       let surface = target.target.surface,
@@ -664,8 +670,8 @@ extension Ghostty {
                     return false
                 }
                 switch action.tag {
-                case GHOSTTY_ACTION_NEW_FLOAT:
-                    return controller.newFloat() != nil
+                case GHOSTTY_ACTION_NEW_FLOAT, GHOSTTY_ACTION_NEW_FLOAT_LOCAL:
+                    return controller.newFloat(inheritSSH: action.tag != GHOSTTY_ACTION_NEW_FLOAT_LOCAL) != nil
                 case GHOSTTY_ACTION_FOCUS_FLOAT:
                     controller.focusFloat(action.action.focus_float)
                 case GHOSTTY_ACTION_TOGGLE_FLOAT_DOCK:
@@ -994,7 +1000,7 @@ extension Ghostty {
             }
         }
 
-        private static func newTab(_ app: ghostty_app_t, target: ghostty_target_s) {
+        private static func newTab(_ app: ghostty_app_t, target: ghostty_target_s, inheritSSH: Bool = true) {
             switch target.tag {
             case GHOSTTY_TARGET_APP:
                 NotificationCenter.default.post(
@@ -1017,12 +1023,16 @@ extension Ghostty {
                     return
                 }
 
+                var config = SurfaceConfiguration(from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_TAB))
+                if inheritSSH && appState.config.sshInheritSession {
+                    MainActor.assumeIsolated {
+                        TerminalSSHReconnect.inherit(from: surfaceView, to: &config, waitAfterCommand: appState.config.waitAfterCommand)
+                    }
+                }
                 NotificationCenter.default.post(
                     name: Notification.ghosttyNewTab,
                     object: surfaceView,
-                    userInfo: [
-                        Notification.NewSurfaceConfigKey: SurfaceConfiguration(from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_TAB)),
-                    ]
+                    userInfo: [Notification.NewSurfaceConfigKey: config]
                 )
 
             default:
@@ -1033,7 +1043,8 @@ extension Ghostty {
         private static func newSplit(
             _ app: ghostty_app_t,
             target: ghostty_target_s,
-            direction: ghostty_action_split_direction_e) {
+            direction: ghostty_action_split_direction_e,
+            inheritSSH: Bool = true) {
             switch target.tag {
             case GHOSTTY_TARGET_APP:
                 // New split does nothing with an app target
@@ -1044,13 +1055,16 @@ extension Ghostty {
                 guard let surface = target.target.surface else { return }
                 guard let surfaceView = self.surfaceView(from: surface) else { return }
 
+                var config = SurfaceConfiguration(from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_SPLIT))
+                if inheritSSH, let appConfig = self.appState(fromView: surfaceView)?.config, appConfig.sshInheritSession {
+                    MainActor.assumeIsolated {
+                        TerminalSSHReconnect.inherit(from: surfaceView, to: &config, waitAfterCommand: appConfig.waitAfterCommand)
+                    }
+                }
                 NotificationCenter.default.post(
                     name: Notification.ghosttyNewSplit,
                     object: surfaceView,
-                    userInfo: [
-                        "direction": direction,
-                        Notification.NewSurfaceConfigKey: SurfaceConfiguration(from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_SPLIT)),
-                    ]
+                    userInfo: ["direction": direction, Notification.NewSurfaceConfigKey: config]
                 )
 
             default:

@@ -69,7 +69,7 @@ extension BaseTerminalController {
     }
 
     @discardableResult
-    func newFloat() -> Ghostty.SurfaceView? {
+    func newFloat(inheritSSH: Bool = true) -> Ghostty.SurfaceView? {
         guard self is TerminalController,
               let app = ghostty.app,
               let parent = treeFocusSurface?.surface else { return nil }
@@ -83,6 +83,9 @@ extension BaseTerminalController {
         }
         config.initialInput = nil
         config.closeOnExit = true
+        if inheritSSH && ghostty.config.sshInheritSession, let source = treeFocusSurface {
+            TerminalSSHReconnect.inherit(from: source, to: &config, waitAfterCommand: ghostty.config.waitAfterCommand)
+        }
         let surface = Ghostty.SurfaceView(app, baseConfig: config)
         appendFloat(surface)
         focusSurface(surface)

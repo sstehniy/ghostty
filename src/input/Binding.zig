@@ -559,6 +559,9 @@ pub const Action = union(enum) {
     /// Open a new tab.
     new_tab,
 
+    /// Open a tab without inheriting an SSH session (macOS only).
+    new_tab_local,
+
     /// Go to the previous tab.
     previous_tab,
 
@@ -645,6 +648,9 @@ pub const Action = union(enum) {
     ///
     new_split: SplitDirection,
 
+    /// Split without inheriting an SSH session (macOS only).
+    new_split_local: SplitDirection,
+
     /// Focus on a split either in the specified direction (`right`, `down`,
     /// `left` and `up`), or in the adjacent split in the order of creation
     /// (`previous` and `next`).
@@ -662,6 +668,9 @@ pub const Action = union(enum) {
 
     /// Create a floating terminal pane (macOS only).
     new_float,
+
+    /// Open a local floating pane (macOS only).
+    new_float_local,
 
     /// Focus the next/previous floating pane, or return to the split tree.
     focus_float: FocusFloat,
@@ -1483,6 +1492,9 @@ pub const Action = union(enum) {
             // come from. For example `new_window` needs to be sourced to
             // a surface so inheritance can be done correctly.
             .new_tab,
+            .new_tab_local,
+            .new_split_local,
+            .new_float_local,
             .previous_tab,
             .next_tab,
             .last_tab,
@@ -3454,6 +3466,16 @@ test "parse: action with enum with default" {
         try testing.expect(binding.action == .new_split);
         try testing.expectEqual(Action.SplitDirection.auto, binding.action.new_split);
     }
+}
+
+test "parse: local SSH escape actions" {
+    const testing = std.testing;
+    inline for (.{ "new_tab_local", "new_float_local" }) |name| {
+        const binding = try parseSingle("a=" ++ name);
+        try testing.expectEqual(@field(Action.Key, name), @as(Action.Key, binding.action));
+    }
+    try testing.expectEqual(Action.SplitDirection.right, (try parseSingle("a=new_split_local:right")).action.new_split_local);
+    try testing.expectEqual(Action.SplitDirection.auto, (try parseSingle("a=new_split_local")).action.new_split_local);
 }
 
 test "parse: floating panes" {

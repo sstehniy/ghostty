@@ -17,6 +17,7 @@ final class TerminalTabSidebarItem: ObservableObject {
 
     /// The icon of the foreground program in the tab's last focused pane.
     @Published var icon: TerminalAppIcon = .terminal
+    @Published var remoteLabel: String?
 
     /// The user-assigned tab color.
     @Published var tabColor: TerminalTabColor = .none
@@ -30,6 +31,7 @@ final class TerminalTabSidebarItem: ObservableObject {
     /// Returns the foreground process of the tab's last focused pane. Called on the
     /// main thread by the icon sampler.
     var foregroundPID: () -> pid_t? = { nil }
+    var remoteDirectory: () -> String? = { nil }
 
     /// The directory for display, with the home directory abbreviated as `~`.
     var displayDirectory: String? {
@@ -492,8 +494,10 @@ final class TerminalTabSidebarModel: ObservableObject {
         TerminalAppIconResolver.shared.resolve(pids: pids) { icons in
             for (item, pid) in pidsByItem {
                 guard item.foregroundPID() == pid else { continue }
-                let icon = pid.flatMap { icons[$0] } ?? .terminal
-                if item.icon != icon { item.icon = icon }
+                let resolution = pid.flatMap { icons[$0] } ?? TerminalAppIconResolver.Resolution()
+                if item.icon != resolution.icon { item.icon = resolution.icon }
+                let label = resolution.remoteLabel(directory: item.remoteDirectory())
+                if item.remoteLabel != label { item.remoteLabel = label }
             }
         }
     }
