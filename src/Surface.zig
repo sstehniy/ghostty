@@ -156,6 +156,9 @@ config_conditional_state: configpkg.ConditionalState,
 /// This is used to determine if we need to confirm, hold open, etc.
 child_exited: bool = false,
 
+/// A creation-time override that survives configuration reloads.
+close_on_exit: bool = false,
+
 /// We maintain our focus state and assume we're focused by default.
 /// If we're not initially focused then apprts can call focusCallback
 /// to let us know.
@@ -1367,7 +1370,7 @@ fn childExited(self: *Surface, info: apprt.surface.Message.ChildExited) void {
 
     // Waiting after command we stop here. The terminal is updated, our
     // state is updated, and now its up to the user to decide what to do.
-    if (self.config.wait_after_command) return;
+    if (self.config.wait_after_command and !self.close_on_exit) return;
 
     // If we aren't waiting after the command, then we exit immediately
     // with no confirmation.
@@ -5582,6 +5585,17 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             .toggle_split_zoom,
             {},
         ),
+
+        .new_float => return try self.rt_app.performAction(.{ .surface = self }, .new_float, {}),
+        .focus_float => |direction| return try self.rt_app.performAction(
+            .{ .surface = self },
+            .focus_float,
+            switch (direction) {
+                inline else => |tag| @field(apprt.action.FocusFloat, @tagName(tag)),
+            },
+        ),
+        .toggle_float_dock => return try self.rt_app.performAction(.{ .surface = self }, .toggle_float_dock, {}),
+        .toggle_floats_visible => return try self.rt_app.performAction(.{ .surface = self }, .toggle_floats_visible, {}),
 
         .toggle_readonly => {
             self.readonly = !self.readonly;

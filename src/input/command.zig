@@ -546,6 +546,39 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = i18n.N_("Toggle the zoom state of the current split."),
         }},
 
+        .new_float => comptime &.{.{
+            .action = .new_float,
+            .title = i18n.N_("New Floating Pane"),
+            .description = i18n.N_("Create a floating terminal pane in this tab."),
+        }},
+        .focus_float => comptime &.{
+            .{
+                .action = .{ .focus_float = .next },
+                .title = i18n.N_("Focus Floating Pane: Next"),
+                .description = i18n.N_("Focus the next floating pane."),
+            },
+            .{
+                .action = .{ .focus_float = .previous },
+                .title = i18n.N_("Focus Floating Pane: Previous"),
+                .description = i18n.N_("Focus the previous floating pane."),
+            },
+            .{
+                .action = .{ .focus_float = .tree },
+                .title = i18n.N_("Focus Split Tree"),
+                .description = i18n.N_("Return focus to the last focused split."),
+            },
+        },
+        .toggle_float_dock => comptime &.{.{
+            .action = .toggle_float_dock,
+            .title = i18n.N_("Toggle Floating Pane Dock"),
+            .description = i18n.N_("Dock the floating pane or float the focused split."),
+        }},
+        .toggle_floats_visible => comptime &.{.{
+            .action = .toggle_floats_visible,
+            .title = i18n.N_("Show/Hide Floating Panes"),
+            .description = i18n.N_("Toggle floating panes in this tab."),
+        }},
+
         .toggle_readonly => comptime &.{.{
             .action = .toggle_readonly,
             .title = i18n.N_("Toggle Read-Only Mode"),

@@ -946,7 +946,12 @@ extension Ghostty {
 
         override func becomeFirstResponder() -> Bool {
             let result = super.becomeFirstResponder()
-            if result { focusDidChange(true) }
+            if result {
+                focusDidChange(true)
+                // SwiftUI doesn't always report focus moving to a floating pane, so
+                // floats sync their controller from AppKit's actual first responder.
+                BaseTerminalController.controller(owning: self)?.floatDidBecomeFirstResponder(self)
+            }
             return result
         }
 

@@ -57,14 +57,13 @@ struct TerminalCommandPaletteView: View {
             }
         }
         .onChange(of: isPresented) { newValue in
-            // When the command palette disappears we need to send focus back to the
-            // surface view we were overlaid on top of. There's probably a better way
-            // to handle the first responder state here but I don't know it.
+            // Restore the controller's selection, which a palette action may have changed.
             if !newValue {
                 // Has to be on queue because onChange happens on a user-interactive
                 // thread and Xcode is mad about this call on that.
                 DispatchQueue.main.async {
-                    surfaceView.window?.makeFirstResponder(surfaceView)
+                    let target = BaseTerminalController.controller(owning: surfaceView)?.focusedSurface ?? surfaceView
+                    target.window?.makeFirstResponder(target)
                 }
             }
         }
@@ -149,7 +148,7 @@ struct TerminalCommandPaletteView: View {
             let color = (window as? TerminalWindow)?.tabColor
             let displayColor = color != TerminalTabColor.none ? color : nil
 
-            return controller.surfaceTree.map { surface in
+            return controller.allSurfaces.map { surface in
                 let terminalTitle = surface.title.isEmpty ? window.title : surface.title
                 let displayTitle: String
                 if let override = controller.titleOverride, !override.isEmpty {

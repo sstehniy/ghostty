@@ -1067,6 +1067,14 @@ palette: Palette = .{},
 /// valid value.
 @"unfocused-split-opacity": f64 = 0.7,
 
+/// The opacity level of an unfocused floating pane, using the same scale and
+/// 0.15 to 1 clamping as `unfocused-split-opacity`. Unfocused floats are
+/// dimmed with `unfocused-split-fill`.
+///
+/// If this is not set, floats use `unfocused-split-opacity` when that is set
+/// explicitly, and 0.5 otherwise. Only supported on macOS.
+@"unfocused-float-opacity": ?f64 = null,
+
 /// The color to dim the unfocused split. Unfocused splits are dimmed by
 /// rendering a semi-transparent rectangle over the split. This sets the color of
 /// that rectangle and can be used to carefully control the dimming effect.
@@ -2242,6 +2250,15 @@ keybind: Keybinds = .{},
 /// Windows smaller than 10 wide by 4 high are not allowed.
 @"window-height": u32 = 0,
 @"window-width": u32 = 0,
+
+/// Initial floating pane width as a percentage of its tab's content area.
+/// New floats open near the top-right corner of the tab.
+/// Clamped to 10-100. Only supported on macOS.
+@"float-width": u8 = 40,
+
+/// Initial floating pane height as a percentage of its tab's content area.
+/// Clamped to 10-100. Only supported on macOS.
+@"float-height": u8 = 40,
 
 /// The starting window position. This position is in pixels and is relative
 /// to the top-left corner of the primary monitor. Both values must be set to take
@@ -4059,6 +4076,10 @@ _replay_steps: std.ArrayList(Replay.Step) = .empty,
 /// Set to true if Ghostty was executed as xdg-terminal-exec on Linux.
 @"_xdg-terminal-exec": bool = false,
 
+/// Set to true if `unfocused-split-opacity` was set explicitly (in a config
+/// file, theme, or CLI arg), so `unfocused-float-opacity` can fall back to it.
+@"_unfocused-split-opacity-set": bool = false,
+
 pub fn deinit(self: *Config) void {
     if (self._arena) |arena| arena.deinit();
     self.* = undefined;
@@ -4939,9 +4960,15 @@ pub fn finalize(self: *Config) !void {
 
     // Clamp our split opacity
     self.@"unfocused-split-opacity" = @min(1.0, @max(0.15, self.@"unfocused-split-opacity"));
+    const float_opacity = self.@"unfocused-float-opacity" orelse
+        if (self.@"_unfocused-split-opacity-set") self.@"unfocused-split-opacity" else 0.5;
+    self.@"unfocused-float-opacity" = @min(1.0, @max(0.15, float_opacity));
 
     // Clamp our contrast
     self.@"minimum-contrast" = @min(21, @max(1, self.@"minimum-contrast"));
+
+    self.@"float-width" = std.math.clamp(self.@"float-width", 10, 100);
+    self.@"float-height" = std.math.clamp(self.@"float-height", 10, 100);
 
     // Minimum window size
     if (self.@"window-width" > 0) self.@"window-width" = @max(10, self.@"window-width");
@@ -5024,6 +5051,14 @@ pub fn parseManuallyHook(
 
         // Do not continue, we consumed everything.
         return false;
+    }
+
+    // Floats fall back to an explicitly set split opacity (see
+    // unfocused-float-opacity). Replays pass through here too.
+    const split_opacity_key = "--unfocused-split-opacity";
+    if (std.mem.startsWith(u8, arg, split_opacity_key)) {
+        const rest = arg[split_opacity_key.len..];
+        if (rest.len == 0 or rest[0] == '=') self.@"_unfocused-split-opacity-set" = true;
     }
 
     // Keep track of our input args for replay
@@ -5239,6 +5274,10 @@ pub fn clone(
             @field(self, field),
         );
     }
+
+    // Not a config key, so the loop above skips it. Needed when cloning before
+    // finalize, which resolves unfocused-float-opacity from it.
+    result.@"_unfocused-split-opacity-set" = self.@"_unfocused-split-opacity-set";
 
     // Copy our diagnostics
     result._diagnostics = try self._diagnostics.clone(alloc_arena);
@@ -11247,6 +11286,81 @@ test "scrollback limits" {
         std.math.maxInt(usize),
         cfg.@"scrollback-limit-lines".value,
     );
+}
+
+test "floating pane dimensions" {
+    const testing = std.testing;
+    var cfg = try Config.default(testing.allocator);
+    defer cfg.deinit();
+    try testing.expectEqual(@as(u8, 40), cfg.@"float-width");
+    try testing.expectEqual(@as(u8, 40), cfg.@"float-height");
+    var it: TestIterator = .{ .data = &.{ "--float-width=0", "--float-height=255" } };
+    try cfg.loadIter(testing.allocator, &it);
+    try cfg.finalize();
+    try testing.expectEqual(@as(u8, 10), cfg.@"float-width");
+    try testing.expectEqual(@as(u8, 100), cfg.@"float-height");
+    var valid: TestIterator = .{ .data = &.{ "--float-width=45", "--float-height=60" } };
+    try cfg.loadIter(testing.allocator, &valid);
+    try cfg.finalize();
+    try testing.expectEqual(@as(u8, 45), cfg.@"float-width");
+    try testing.expectEqual(@as(u8, 60), cfg.@"float-height");
+}
+
+test "unfocused float opacity falls back to explicit split opacity, else 0.5" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    {
+        var cfg = try Config.default(alloc);
+        defer cfg.deinit();
+        try cfg.finalize();
+        try testing.expectEqual(@as(?f64, 0.5), cfg.@"unfocused-float-opacity");
+    }
+    {
+        var cfg = try Config.default(alloc);
+        defer cfg.deinit();
+        var it: TestIterator = .{ .data = &.{"--unfocused-split-opacity=0.8"} };
+        try cfg.loadIter(alloc, &it);
+        try cfg.finalize();
+        try testing.expectEqual(@as(?f64, 0.8), cfg.@"unfocused-float-opacity");
+    }
+    {
+        // Explicitly setting the split default still counts as set.
+        var cfg = try Config.default(alloc);
+        defer cfg.deinit();
+        var it: TestIterator = .{ .data = &.{"--unfocused-split-opacity=0.7"} };
+        try cfg.loadIter(alloc, &it);
+        try cfg.finalize();
+        try testing.expectEqual(@as(?f64, 0.7), cfg.@"unfocused-float-opacity");
+    }
+    {
+        var cfg = try Config.default(alloc);
+        defer cfg.deinit();
+        var it: TestIterator = .{ .data = &.{ "--unfocused-split-opacity=0.8", "--unfocused-float-opacity=0.05" } };
+        try cfg.loadIter(alloc, &it);
+        try cfg.finalize();
+        try testing.expectEqual(@as(?f64, 0.15), cfg.@"unfocused-float-opacity");
+    }
+    {
+        // Cloning before finalize keeps the explicit split setting.
+        var cfg = try Config.default(alloc);
+        defer cfg.deinit();
+        var it: TestIterator = .{ .data = &.{"--unfocused-split-opacity=0.8"} };
+        try cfg.loadIter(alloc, &it);
+        var copy = try cfg.clone(alloc);
+        defer copy.deinit();
+        try copy.finalize();
+        try testing.expectEqual(@as(?f64, 0.8), copy.@"unfocused-float-opacity");
+    }
+    {
+        // Similar keys don't count as the split option.
+        var cfg = try Config.default(alloc);
+        defer cfg.deinit();
+        var it: TestIterator = .{ .data = &.{"--unfocused-split-opacity-other=0.8"} };
+        cfg.loadIter(alloc, &it) catch {};
+        try cfg.finalize();
+        try testing.expectEqual(@as(?f64, 0.5), cfg.@"unfocused-float-opacity");
+    }
 }
 
 test "clipboard write limit" {

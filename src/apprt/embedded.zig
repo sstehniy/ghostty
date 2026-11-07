@@ -499,6 +499,9 @@ pub const Surface = struct {
 
         /// Context for the new surface
         context: apprt.surface.NewSurfaceContext = .window,
+
+        /// Override wait-after-command for this surface, including after config reloads.
+        close_on_exit: bool = false,
     };
 
     pub fn init(self: *Surface, app: *App, opts: Options) !void {
@@ -622,6 +625,7 @@ pub const Surface = struct {
             self,
         );
         errdefer self.core_surface.deinit();
+        self.core_surface.close_on_exit = opts.close_on_exit;
 
         // If our options requested a specific font-size, set that.
         if (opts.font_size != 0) {

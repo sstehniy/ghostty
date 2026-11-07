@@ -4,6 +4,22 @@ import SwiftUI
 
 @Suite
 struct ConfigTests {
+    @Test func floatingPaneDimensionsUseClampedPercentages() throws {
+        let defaults = try TemporaryConfig("")
+        #expect(defaults.floatWidth == 0.4)
+        #expect(defaults.floatHeight == 0.4)
+        let config = try TemporaryConfig("float-width = 0\nfloat-height = 255")
+        #expect(config.floatWidth == 0.1)
+        #expect(config.floatHeight == 1)
+    }
+
+    @Test func unfocusedFloatOpacityFallsBackToExplicitSplitOpacity() throws {
+        #expect(abs(try TemporaryConfig("").unfocusedFloatOpacity - 0.5) < 0.0001)
+        #expect(abs(try TemporaryConfig("unfocused-split-opacity = 0.8").unfocusedFloatOpacity - 0.2) < 0.0001)
+        let both = try TemporaryConfig("unfocused-split-opacity = 0.8\nunfocused-float-opacity = 0.9")
+        #expect(abs(both.unfocusedFloatOpacity - 0.1) < 0.0001)
+    }
+
     // MARK: - Boolean Properties
 
     @Test func initialWindowDefaultsToTrue() throws {

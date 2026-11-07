@@ -615,6 +615,9 @@ extension Ghostty {
         /// Wait after the command
         var waitAfterCommand: Bool = false
 
+        /// Close on normal exit regardless of wait-after-command configuration.
+        var closeOnExit: Bool = false
+
         /// Context for surface creation
         var context: ghostty_surface_context_e = GHOSTTY_SURFACE_CONTEXT_WINDOW
 
@@ -658,6 +661,7 @@ extension Ghostty {
 
             // Set wait after command
             config.wait_after_command = waitAfterCommand
+            config.close_on_exit = closeOnExit
 
             // Set context
             config.context = context

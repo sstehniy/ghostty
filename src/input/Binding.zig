@@ -660,6 +660,18 @@ pub const Action = union(enum) {
     /// reflect this by displaying an icon indicating the zoomed state.
     toggle_split_zoom,
 
+    /// Create a floating terminal pane (macOS only).
+    new_float,
+
+    /// Focus the next/previous floating pane, or return to the split tree.
+    focus_float: FocusFloat,
+
+    /// Dock a floating pane or pop a split out into a floating pane (macOS only).
+    toggle_float_dock,
+
+    /// Show or hide this tab's floating panes (macOS only).
+    toggle_floats_visible,
+
     /// Toggle read-only mode for the current surface.
     ///
     /// When a surface is in read-only mode:
@@ -1076,6 +1088,8 @@ pub const Action = union(enum) {
         pub const default: SplitDirection = .auto;
     };
 
+    pub const FocusFloat = enum { next, previous, tree };
+
     pub const SplitFocusDirection = enum {
         previous,
         next,
@@ -1480,6 +1494,10 @@ pub const Action = union(enum) {
             .goto_split,
             .goto_window,
             .toggle_split_zoom,
+            .new_float,
+            .focus_float,
+            .toggle_float_dock,
+            .toggle_floats_visible,
             .toggle_readonly,
             .resize_split,
             .equalize_splits,
@@ -3436,6 +3454,20 @@ test "parse: action with enum with default" {
         try testing.expect(binding.action == .new_split);
         try testing.expectEqual(Action.SplitDirection.auto, binding.action.new_split);
     }
+}
+
+test "parse: floating panes" {
+    const testing = std.testing;
+    inline for (.{ "new_float", "toggle_float_dock", "toggle_floats_visible" }) |name| {
+        const binding = try parseSingle("a=" ++ name);
+        try testing.expectEqual(@field(Action.Key, name), @as(Action.Key, binding.action));
+    }
+    inline for (.{ "next", "previous", "tree" }) |direction| {
+        const binding = try parseSingle("a=focus_float:" ++ direction);
+        try testing.expectEqual(@field(Action.FocusFloat, direction), binding.action.focus_float);
+    }
+    try testing.expectError(error.InvalidFormat, parseSingle("a=focus_float:up"));
+    try testing.expectError(error.InvalidFormat, parseSingle("a=focus_float"));
 }
 
 test "parse: action with int" {

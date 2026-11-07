@@ -21,7 +21,7 @@ extension TerminalRestorableState {
 extension TerminalRestorableState.InternalState where ViewType == Ghostty.SurfaceView {
     init(from controller: TerminalController) {
         self.init(
-            focusedSurface: controller.focusedSurface?.id.uuidString,
+            focusedSurface: controller.treeFocusSurface?.id.uuidString,
             surfaceTree: controller.surfaceTree,
             effectiveFullscreenMode: controller.fullscreenStyle.flatMap { $0.isFullscreen ? $0.fullscreenMode : nil },
             tabColor: (controller.window as? TerminalWindow)?.tabColor,

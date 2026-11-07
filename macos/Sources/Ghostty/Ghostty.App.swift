@@ -655,6 +655,26 @@ extension Ghostty {
             case GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM:
                 return toggleSplitZoom(app, target: target)
 
+            case GHOSTTY_ACTION_NEW_FLOAT, GHOSTTY_ACTION_FOCUS_FLOAT,
+                 GHOSTTY_ACTION_TOGGLE_FLOAT_DOCK, GHOSTTY_ACTION_TOGGLE_FLOATS_VISIBLE:
+                guard target.tag == GHOSTTY_TARGET_SURFACE,
+                      let surface = target.target.surface,
+                      let view = surfaceView(from: surface),
+                      let controller = BaseTerminalController.controller(owning: view) as? TerminalController else {
+                    return false
+                }
+                switch action.tag {
+                case GHOSTTY_ACTION_NEW_FLOAT:
+                    return controller.newFloat() != nil
+                case GHOSTTY_ACTION_FOCUS_FLOAT:
+                    controller.focusFloat(action.action.focus_float)
+                case GHOSTTY_ACTION_TOGGLE_FLOAT_DOCK:
+                    return controller.toggleFloatDock()
+                default:
+                    controller.toggleFloatsVisible()
+                }
+                return true
+
             case GHOSTTY_ACTION_INSPECTOR:
                 controlInspector(app, target: target, mode: action.action.inspector)
 
@@ -1387,7 +1407,8 @@ extension Ghostty {
                     guard let splitDirection = SplitFocusDirection.from(direction: direction) else { return false }
 
                     // Find the current node in the tree
-                    guard let targetNode = controller.surfaceTree.root?.node(view: surfaceView) else { return false }
+                    let treeSurface = controller.surfaceTree.contains(surfaceView) ? surfaceView : controller.treeFocusSurface
+                    guard let treeSurface, let targetNode = controller.surfaceTree.root?.node(view: treeSurface) else { return false }
 
                     // Check if a split actually exists in the target direction before
                     // returning true. This ensures performable keybinds only consume

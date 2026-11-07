@@ -189,6 +189,7 @@ class AppDelegate: NSObject,
     private let appIconUpdater = AppIconUpdater()
 
     @MainActor private lazy var menuShortcutManager = Ghostty.MenuShortcutManager()
+    private var floatingPaneMenuItems: [String: NSMenuItem] = [:]
 
     override init() {
 #if DEBUG
@@ -1005,7 +1006,7 @@ class AppDelegate: NSObject,
 
     func findSurface(forUUID uuid: UUID) -> Ghostty.SurfaceView? {
         for c in TerminalController.all {
-            for view in c.surfaceTree where view.id == uuid {
+            for view in c.allSurfaces where view.id == uuid {
                 return view
             }
         }
@@ -1241,6 +1242,30 @@ extension AppDelegate {
         guard ghostty.readiness == .ready else { return }
 
         menuShortcutManager.reset()
+
+        if floatingPaneMenuItems.isEmpty, let viewMenu = menuCommandPalette?.menu {
+            let submenu = NSMenu(title: "Floating Panes")
+            let actions = [
+                ("new_float", "New Floating Pane"),
+                ("focus_float:next", "Focus Next Floating Pane"),
+                ("focus_float:previous", "Focus Previous Floating Pane"),
+                ("focus_float:tree", "Focus Split Tree"),
+                ("toggle_float_dock", "Dock / Float Pane"),
+                ("toggle_floats_visible", "Show / Hide Floating Panes"),
+            ]
+            for (action, title) in actions {
+                let item = NSMenuItem(title: title, action: #selector(BaseTerminalController.performFloatingPaneAction), keyEquivalent: "")
+                item.representedObject = action
+                submenu.addItem(item)
+                floatingPaneMenuItems[action] = item
+            }
+            let item = NSMenuItem(title: submenu.title, action: nil, keyEquivalent: "")
+            item.submenu = submenu
+            viewMenu.addItem(item)
+        }
+        for (action, item) in floatingPaneMenuItems {
+            syncMenuShortcut(config, action: action, menuItem: item)
+        }
 
         syncMenuShortcut(config, action: "check_for_updates", menuItem: self.menuCheckForUpdates)
         syncMenuShortcut(config, action: "open_config", menuItem: self.menuOpenConfig)

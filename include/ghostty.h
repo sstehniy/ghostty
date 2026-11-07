@@ -534,6 +534,8 @@ typedef struct {
   const char* GHOSTTY_NULLABLE initial_input;
   bool wait_after_command;
   ghostty_surface_context_e context;
+  // Close on normal process exit even when wait-after-command is enabled.
+  bool close_on_exit;
 } ghostty_surface_config_s;
 
 typedef struct {
@@ -630,6 +632,13 @@ typedef enum {
   GHOSTTY_SPLIT_DIRECTION_LEFT,
   GHOSTTY_SPLIT_DIRECTION_UP,
 } ghostty_action_split_direction_e;
+
+// apprt.action.FocusFloat
+typedef enum {
+  GHOSTTY_FOCUS_FLOAT_NEXT,
+  GHOSTTY_FOCUS_FLOAT_PREVIOUS,
+  GHOSTTY_FOCUS_FLOAT_TREE,
+} ghostty_action_focus_float_e;
 
 // apprt.action.GotoSplit
 typedef enum {
@@ -1041,6 +1050,10 @@ typedef enum {
   GHOSTTY_ACTION_MOVE_TAB_TO_NEW_WINDOW,
   GHOSTTY_ACTION_RESIZE_WINDOW,
   GHOSTTY_ACTION_SET_WINDOW_THEME,
+  GHOSTTY_ACTION_NEW_FLOAT,
+  GHOSTTY_ACTION_FOCUS_FLOAT,
+  GHOSTTY_ACTION_TOGGLE_FLOAT_DOCK,
+  GHOSTTY_ACTION_TOGGLE_FLOATS_VISIBLE,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1049,6 +1062,7 @@ typedef union {
   ghostty_action_move_tab_s move_tab;
   ghostty_action_goto_tab_e goto_tab;
   ghostty_action_goto_split_e goto_split;
+  ghostty_action_focus_float_e focus_float;
   ghostty_action_goto_window_e goto_window;
   ghostty_action_resize_split_s resize_split;
   ghostty_action_size_limit_s size_limit;

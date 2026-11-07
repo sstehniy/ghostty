@@ -486,6 +486,22 @@ extension Ghostty {
             return MacHidden(rawValue: str) ?? .never
         }
 
+        var floatWidth: Double {
+            guard let config else { return 0.4 }
+            var value: UInt32 = 40
+            let key = "float-width"
+            _ = ghostty_config_get(config, &value, key, UInt(key.utf8.count))
+            return Double(value) / 100
+        }
+
+        var floatHeight: Double {
+            guard let config else { return 0.4 }
+            var value: UInt32 = 40
+            let key = "float-height"
+            _ = ghostty_config_get(config, &value, key, UInt(key.utf8.count))
+            return Double(value) / 100
+        }
+
         var focusFollowsMouse: Bool {
             guard let config = self.config else { return false }
             var v = false
@@ -529,6 +545,15 @@ extension Ghostty {
             guard let config = self.config else { return 1 }
             var opacity: Double = 0.85
             let key = "unfocused-split-opacity"
+            _ = ghostty_config_get(config, &opacity, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return 1 - opacity
+        }
+
+        /// Opacity of the dim overlay on unfocused floats (1 - unfocused-float-opacity).
+        var unfocusedFloatOpacity: Double {
+            guard let config = self.config else { return 0.5 }
+            var opacity: Double = 0.5
+            let key = "unfocused-float-opacity"
             _ = ghostty_config_get(config, &opacity, key, UInt(key.lengthOfBytes(using: .utf8)))
             return 1 - opacity
         }

@@ -9,6 +9,11 @@ protocol TerminalViewDelegate: AnyObject {
     /// Called when the currently focused surface changed. This can be nil.
     func focusedSurfaceDidChange(to: Ghostty.SurfaceView?)
 
+    /// Called when SwiftUI reports a focus change. These reports can arrive late and
+    /// name a surface that no longer has focus, so delegates may reject them; explicit
+    /// focus requests use `focusedSurfaceDidChange(to:)` instead.
+    func focusedSurfaceReported(_ surface: Ghostty.SurfaceView?)
+
     /// The URL of the pwd should change.
     func pwdDidChange(to: URL?)
 
@@ -20,6 +25,12 @@ protocol TerminalViewDelegate: AnyObject {
 
     /// A split tree operation
     func performSplitAction(_ action: TerminalSplitOperation)
+}
+
+extension TerminalViewDelegate {
+    func focusedSurfaceReported(_ surface: Ghostty.SurfaceView?) {
+        focusedSurfaceDidChange(to: surface)
+    }
 }
 
 /// The view model is a required implementation for TerminalView callers. This contains
@@ -88,6 +99,11 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                     TerminalSplitTreeView(
                         tree: viewModel.surfaceTree,
                         action: { delegate?.performSplitAction($0) })
+                        .overlay {
+                            if let controller = viewModel as? TerminalController {
+                                TerminalFloatOverlay(controller: controller)
+                            }
+                        }
                         .environmentObject(ghostty)
                         .ghosttyLastFocusedSurface(lastFocusedSurface)
                         .focused($focused)
@@ -97,7 +113,7 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                             // we lose focus we keep this set to the last non-nil value.
                             if newValue != nil {
                                 lastFocusedSurface = .init(newValue)
-                                self.delegate?.focusedSurfaceDidChange(to: newValue)
+                                self.delegate?.focusedSurfaceReported(newValue)
                             }
                         }
                         .onChange(of: pwdURL) { newValue in

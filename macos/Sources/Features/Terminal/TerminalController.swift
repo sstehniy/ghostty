@@ -195,7 +195,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     // MARK: Base Controller Overrides
 
     override var needsQuitConfirmation: Bool {
-        !sidebarItem.lifecycle.isSaved && super.needsQuitConfirmation
+        floats.contains(where: { $0.surface.needsConfirmQuit }) ||
+            (!sidebarItem.lifecycle.isSaved && super.needsQuitConfirmation)
     }
 
     override func surfaceTreeDidChange(from: SplitTree<Ghostty.SurfaceView>, to: SplitTree<Ghostty.SurfaceView>) {
@@ -757,9 +758,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             return
         }
 
+        let confirm = withConfirmation || floats.contains(where: { $0.surface.needsConfirmQuit })
         // More than 1 window means we have tabs and we're closing a tab
         if window?.tabGroup?.windows.count ?? 0 > 1 {
-            if withConfirmation {
+            if confirm {
                 closeTab(nil)
             } else {
                 closeTabImmediately()
@@ -768,7 +770,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         }
 
         // 1 window, closing the window
-        if withConfirmation {
+        if confirm {
             closeWindow(nil)
         } else {
             closeWindowImmediately()
@@ -1044,8 +1046,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // needs quit confirmation. This lets us attach the confirmation to something
         // that is running.
         guard let confirmWindow = all
-            .first(where: { $0.surfaceTree.contains(where: { $0.needsConfirmQuit }) })?
-            .surfaceTree.first(where: { $0.needsConfirmQuit })?
+            .first(where: { $0.needsConfirmQuit })?
             .window
         else {
             closeAllWindowsImmediately()
@@ -1146,7 +1147,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         return .init(
             frame: window.frame,
             surfaceTree: surfaceTree,
-            focusedSurface: focusedSurface?.id,
+            focusedSurface: treeFocusSurface?.id,
             tabIndex: window.tabGroup?.windows.firstIndex(of: window),
             tabGroup: window.tabGroup,
             tabColor: (window as? TerminalWindow)?.tabColor ?? .none,
@@ -1423,7 +1424,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             return
         }
 
-        guard surfaceTree.contains(where: { $0.needsConfirmQuit }) else {
+        guard needsConfirmQuit else {
             closeTabImmediately()
             return
         }
@@ -1455,7 +1456,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
             guard !controller.sidebarItem.lifecycle.isSaved else { return false }
             // Check if any surfaces require confirmation
-            return controller.surfaceTree.contains(where: { $0.needsConfirmQuit })
+            return controller.needsConfirmQuit
         }) else {
             self.closeOtherTabsImmediately()
             return
@@ -1478,7 +1479,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                 return false
             }
 
-            return controller.surfaceTree.contains(where: { $0.needsConfirmQuit })
+            return controller.needsConfirmQuit
         }
 
         if !needsConfirm {
@@ -1537,7 +1538,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         let windows: [NSWindow] = window.tabGroup?.windows ?? [window]
         let confirmControllers = windows
             .compactMap({ $0.windowController as? TerminalController })
-            .filter({ $0.surfaceTree.contains(where: { $0.needsConfirmQuit }) })
+            .filter({ $0.needsConfirmQuit })
         guard
             !confirmControllers.isEmpty
         else {
@@ -1791,31 +1792,31 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     @objc private func onCloseTab(notification: SwiftUI.Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
-        guard surfaceTree.contains(target) else { return }
+        guard allSurfaces.contains(target) else { return }
         closeTab(self)
     }
 
     @objc private func onCloseOtherTabs(notification: SwiftUI.Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
-        guard surfaceTree.contains(target) else { return }
+        guard allSurfaces.contains(target) else { return }
         closeOtherTabs(self)
     }
 
     @objc private func onCloseTabsOnTheRight(notification: SwiftUI.Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
-        guard surfaceTree.contains(target) else { return }
+        guard allSurfaces.contains(target) else { return }
         closeTabsOnTheRight(self)
     }
 
     @objc private func onCloseWindow(notification: SwiftUI.Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
-        guard surfaceTree.contains(target) else { return }
+        guard allSurfaces.contains(target) else { return }
         closeWindow(self)
     }
 
     @objc private func onResetWindowSize(notification: SwiftUI.Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
-        guard surfaceTree.contains(target) else { return }
+        guard allSurfaces.contains(target) else { return }
         returnToDefaultSize(nil)
     }
 
@@ -2095,7 +2096,7 @@ extension TerminalController: TerminalTabSidebarActions {
     private static func needsCloseConfirmation(_ windows: [NSWindow]) -> Bool {
         windows.contains { window in
             guard let controller = window.windowController as? TerminalController else { return false }
-            return controller.surfaceTree.contains(where: { $0.needsConfirmQuit })
+            return controller.needsConfirmQuit
         }
     }
 

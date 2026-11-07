@@ -367,6 +367,18 @@ pub const Action = union(Key) {
     /// Set the application window theme for this session.
     set_window_theme: WindowTheme,
 
+    /// Create a floating terminal pane.
+    new_float,
+
+    /// Focus a floating pane or the split tree.
+    focus_float: FocusFloat,
+
+    /// Move a surface between the split tree and floating panes.
+    toggle_float_dock,
+
+    /// Toggle floating pane visibility.
+    toggle_floats_visible,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -440,6 +452,10 @@ pub const Action = union(Key) {
         move_tab_to_new_window,
         resize_window,
         set_window_theme,
+        new_float,
+        focus_float,
+        toggle_float_dock,
+        toggle_floats_visible,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -529,6 +545,16 @@ pub const SplitDirection = enum(c_int) {
 
 // This is made extern (c_int) to make interop easier with our embedded
 // runtime. The small size cost doesn't make a difference in our union.
+pub const FocusFloat = enum(c_int) {
+    next,
+    previous,
+    tree,
+
+    test "ghostty.h FocusFloat" {
+        try lib.checkGhosttyHEnum(FocusFloat, "GHOSTTY_FOCUS_FLOAT_");
+    }
+};
+
 pub const GotoSplit = enum(c_int) {
     previous,
     next,

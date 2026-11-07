@@ -16,6 +16,10 @@ extension Ghostty {
         @State private var isDragging: Bool = false
 
         private var handleVisible: Bool {
+            if let controller = BaseTerminalController.controller(owning: surfaceView),
+               controller.floats.contains(where: { $0.surface === surfaceView }) {
+                return false
+            }
             switch dragHandle {
             case .always:
                 return true

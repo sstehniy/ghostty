@@ -91,7 +91,7 @@ final class ScriptTab: NSObject {
         guard NSApp.isAppleScriptEnabled else { return nil }
         guard let controller else { return nil }
         guard let surface = controller.focusedSurface,
-              controller.surfaceTree.contains(surface)
+              controller.allSurfaces.contains(surface)
         else { return nil }
 
         return ScriptTerminal(surfaceView: surface)
@@ -116,7 +116,7 @@ final class ScriptTab: NSObject {
     var terminals: [ScriptTerminal] {
         guard NSApp.isAppleScriptEnabled else { return [] }
         guard let controller else { return [] }
-        return (controller.surfaceTree.root?.leaves() ?? [])
+        return controller.allSurfaces
             .map(ScriptTerminal.init)
     }
 
@@ -125,7 +125,7 @@ final class ScriptTab: NSObject {
     func valueInTerminals(uniqueID: String) -> ScriptTerminal? {
         guard NSApp.isAppleScriptEnabled else { return nil }
         guard let controller else { return nil }
-        return (controller.surfaceTree.root?.leaves() ?? [])
+        return controller.allSurfaces
             .first(where: { $0.id.uuidString == uniqueID })
             .map(ScriptTerminal.init)
     }
