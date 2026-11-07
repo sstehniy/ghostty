@@ -32,3 +32,20 @@
       application.
   (5) When done, quit via:
       `osascript -e 'tell application "<absolute path to build/Debug/Ghostty.app>" to quit'`
+
+## Local Install (fork)
+
+- Install a release build with `macos/install-local.sh`. It builds
+  GhosttyKit (ReleaseFast) and the app (ReleaseLocal), signs it with an
+  Apple Development certificate, and replaces `/Applications/Ghostty.app`.
+  - `--restart` quits and relaunches Ghostty afterwards (runs detached).
+  - `--no-build` reinstalls the last build without rebuilding.
+  - `GHOSTTY_SIGN_IDENTITY` overrides the signing certificate.
+- Do not sign local installs ad-hoc: macOS keys privacy permissions to the
+  signature, so ad-hoc builds lose them on every install.
+- The install is swapped while Ghostty keeps running, so it is safe to run
+  from inside Ghostty. Agents usually run inside the installed Ghostty: never
+  run the script, pass `--restart`, or modify `/Applications/Ghostty.app`
+  without the user's explicit request.
+- The installed app shares the bundle id `com.mitchellh.ghostty` with
+  upstream releases. For UI testing, use the Debug build instead.
