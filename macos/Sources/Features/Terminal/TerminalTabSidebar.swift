@@ -577,6 +577,7 @@ struct TerminalTabSidebarRow: View {
 
     static let height: CGFloat = 44
     static let iconSize: CGFloat = 16
+    private static let hoverButtonSize: CGFloat = 18
 
     @ObservedObject var item: TerminalTabSidebarItem
     let isSelected: Bool
@@ -639,7 +640,7 @@ struct TerminalTabSidebarRow: View {
                     .accessibilityLabel(issue)
             }
             trailing
-                .frame(width: 24, alignment: .trailing)
+                .frame(minWidth: 24, alignment: .trailing)
         }
         .padding(.leading, 10)
         .padding(.trailing, 6)
@@ -657,21 +658,57 @@ struct TerminalTabSidebarRow: View {
         .accessibilityAction { perform(.select) }
         .accessibilityAction(named: "Close Tab") { perform(.close) }
         .accessibilityAction(named: "Rename Tab") { perform(.rename) }
+        .accessibilityAction(named: item.lifecycle.isPinned ? "Unpin Tab" : "Pin Tab") { perform(.pin) }
     }
 
     @ViewBuilder
     private var trailing: some View {
         if hovering {
-            TerminalTabSidebarIconButton(
-                systemName: "xmark",
-                foreground: foreground,
-                help: "Close Tab",
-                size: 18,
-                symbolSize: 8.5,
-                symbolWeight: .bold
-            ) {
-                perform(.close)
+            HStack(spacing: 1) {
+                TerminalTabSidebarIconButton(
+                    systemName: item.lifecycle.isPinned ? "pin.slash" : "pin",
+                    foreground: foreground,
+                    help: item.lifecycle.isPinned ? "Unpin Tab" : "Pin Tab",
+                    size: Self.hoverButtonSize,
+                    symbolSize: 10
+                ) {
+                    perform(.pin)
+                }
+
+                if item.lifecycle.isSnoozed {
+                    TerminalTabSidebarIconButton(
+                        systemName: "alarm",
+                        foreground: foreground,
+                        help: "Wake Tab",
+                        size: Self.hoverButtonSize,
+                        symbolSize: 10
+                    ) {
+                        perform(.wake)
+                    }
+                } else {
+                    TerminalTabSidebarIconMenu(
+                        systemName: "moon.zzz",
+                        foreground: foreground,
+                        help: "Snooze Tab",
+                        size: Self.hoverButtonSize,
+                        symbolSize: 10
+                    ) {
+                        snoozeMenuItems
+                    }
+                }
+
+                TerminalTabSidebarIconButton(
+                    systemName: "xmark",
+                    foreground: foreground,
+                    help: "Close Tab",
+                    size: Self.hoverButtonSize,
+                    symbolSize: 8.5,
+                    symbolWeight: .bold
+                ) {
+                    perform(.close)
+                }
             }
+            .fixedSize()
         } else if let shortcut = item.shortcut, !shortcut.isEmpty {
             Text(shortcut)
                 .font(.system(size: 10.5, weight: .medium).monospacedDigit())
@@ -720,21 +757,7 @@ struct TerminalTabSidebarRow: View {
     @ViewBuilder
     private var contextMenu: some View {
         Button(item.lifecycle.isPinned ? "Unpin Tab" : "Pin Tab") { perform(.pin) }
-        Menu("Snooze") {
-            ForEach(TerminalSnoozePreset.allCases, id: \.self) { preset in
-                Button(preset.rawValue) {
-                    let hour = (0..<24).contains(morningHour) ? morningHour : 9
-                    if let deadline = preset.deadline(morningHour: hour) { perform(.snooze(deadline)) }
-                }
-            }
-            Button("Custom…") { perform(.customSnooze) }
-            Divider()
-            Picker("Morning Time", selection: $morningHour) {
-                ForEach(0..<24, id: \.self) { hour in
-                    Text(String(format: "%02d:00", hour)).tag(hour)
-                }
-            }
-        }
+        Menu("Snooze") { snoozeMenuItems }
         if item.lifecycle.isSnoozed {
             Button("Wake Tab") { perform(.wake) }
         }
@@ -764,6 +787,24 @@ struct TerminalTabSidebarRow: View {
             .disabled(!canCloseToTheRight)
     }
 
+    /// The snooze presets, shared by the context menu and the hover button.
+    @ViewBuilder
+    private var snoozeMenuItems: some View {
+        ForEach(TerminalSnoozePreset.allCases, id: \.self) { preset in
+            Button(preset.rawValue) {
+                let hour = (0..<24).contains(morningHour) ? morningHour : 9
+                if let deadline = preset.deadline(morningHour: hour) { perform(.snooze(deadline)) }
+            }
+        }
+        Button("Custom…") { perform(.customSnooze) }
+        Divider()
+        Picker("Morning Time", selection: $morningHour) {
+            ForEach(0..<24, id: \.self) { hour in
+                Text(String(format: "%02d:00", hour)).tag(hour)
+            }
+        }
+    }
+
     private var tooltip: String {
         [title, item.displayDirectory, item.restorationIssue].compactMap { $0 }.joined(separator: "\n")
     }
@@ -784,7 +825,7 @@ struct TerminalTabSidebarRow: View {
 // MARK: Icon Button
 
 /// A small borderless symbol button with a hover highlight, used for the new tab
-/// and close buttons.
+/// button and the row's hover buttons.
 struct TerminalTabSidebarIconButton: View {
     let systemName: String
     let foreground: Color
@@ -798,19 +839,70 @@ struct TerminalTabSidebarIconButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: symbolSize, weight: symbolWeight))
-                .foregroundColor(foreground.opacity(hovering ? 0.85 : 0.55))
-                .frame(width: size, height: size)
-                .background(
-                    RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
-                        .fill(foreground.opacity(hovering ? 0.08 : 0)))
-                .contentShape(Rectangle())
+            TerminalTabSidebarIconLabel(
+                systemName: systemName,
+                foreground: foreground,
+                hovering: hovering,
+                size: size,
+                symbolSize: symbolSize,
+                symbolWeight: symbolWeight)
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help(help)
         .accessibilityLabel(help)
+    }
+}
+
+/// Like `TerminalTabSidebarIconButton`, but clicking it opens a menu.
+struct TerminalTabSidebarIconMenu<Content: View>: View {
+    let systemName: String
+    let foreground: Color
+    let help: String
+    var size: CGFloat = 26
+    var symbolSize: CGFloat = 12
+    var symbolWeight: Font.Weight = .medium
+    @ViewBuilder let content: () -> Content
+
+    @State private var hovering = false
+
+    var body: some View {
+        Menu(content: content) {
+            TerminalTabSidebarIconLabel(
+                systemName: systemName,
+                foreground: foreground,
+                hovering: hovering,
+                size: size,
+                symbolSize: symbolSize,
+                symbolWeight: symbolWeight)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .onHover { hovering = $0 }
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}
+
+private struct TerminalTabSidebarIconLabel: View {
+    let systemName: String
+    let foreground: Color
+    let hovering: Bool
+    let size: CGFloat
+    let symbolSize: CGFloat
+    let symbolWeight: Font.Weight
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: symbolSize, weight: symbolWeight))
+            .foregroundColor(foreground.opacity(hovering ? 0.85 : 0.55))
+            .frame(width: size, height: size)
+            .background(
+                RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+                    .fill(foreground.opacity(hovering ? 0.08 : 0)))
+            .contentShape(Rectangle())
     }
 }
 
