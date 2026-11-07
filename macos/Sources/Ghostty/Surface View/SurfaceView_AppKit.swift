@@ -322,19 +322,17 @@ extension Ghostty {
             }
             self.surfaceModel = Ghostty.Surface(cSurface: surface)
 
-            // A deferred terminal starts after the view is already in a window, so
-            // the window callbacks that set its scale and display have already fired.
-            // Replay them here.
-            //
+            // A deferred terminal starts after layout and window callbacks have already
+            // fired without a surface, so replay its size, scale, and display here.
+            viewDidChangeBackingProperties()
+            if let screen = window?.screen { ghostty_surface_set_display_id(surface, screen.displayID ?? 0) }
+
             // Don't report occlusion here, as upstream doesn't: the renderer starts
-            // visible and BaseTerminalController reports later changes. Reporting
-            // "occluded" before the renderer has built its first cells stops it from
-            // building them, and a main-thread layer draw in between then renders
-            // the uninitialized grid as random artifacts.
-            if let window {
-                viewDidChangeBackingProperties()
-                if let screen = window.screen { ghostty_surface_set_display_id(surface, screen.displayID ?? 0) }
-            }
+            // visible and BaseTerminalController reports later changes (including
+            // after a deferred start). Reporting "occluded" before the renderer has
+            // built its first cells stops it from building them, and a main-thread
+            // layer draw in between then renders the uninitialized grid as random
+            // artifacts.
             updateTrackingAreas()
             registerForDraggedTypes(Array(Self.dropTypes))
         }
