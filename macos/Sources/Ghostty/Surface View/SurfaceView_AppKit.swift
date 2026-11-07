@@ -321,10 +321,20 @@ extension Ghostty {
                 return
             }
             self.surfaceModel = Ghostty.Surface(cSurface: surface)
-            viewDidChangeBackingProperties()
-            if let screen = window?.screen { ghostty_surface_set_display_id(surface, screen.displayID ?? 0) }
-            isWindowVisible = window?.occlusionState.contains(.visible) ?? false
-            ghostty_surface_set_occlusion(surface, isWindowVisible)
+
+            // A deferred terminal starts after the view is already in a window, so
+            // the window callbacks that set its scale and display have already fired.
+            // Replay them here.
+            //
+            // Don't report occlusion here, as upstream doesn't: the renderer starts
+            // visible and BaseTerminalController reports later changes. Reporting
+            // "occluded" before the renderer has built its first cells stops it from
+            // building them, and a main-thread layer draw in between then renders
+            // the uninitialized grid as random artifacts.
+            if let window {
+                viewDidChangeBackingProperties()
+                if let screen = window.screen { ghostty_surface_set_display_id(surface, screen.displayID ?? 0) }
+            }
             updateTrackingAreas()
             registerForDraggedTypes(Array(Self.dropTypes))
         }
