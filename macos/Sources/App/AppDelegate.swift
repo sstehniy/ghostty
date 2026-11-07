@@ -1409,7 +1409,7 @@ extension AppDelegate {
     func terminate() -> NSApplication.TerminateReply {
         let controllersNeedConfirmation = NSApplication.shared.windows
             .compactMap { $0.windowController as? BaseTerminalController }
-            .filter { !$0.windowCanBeClosedWithoutConfirmation() }
+            .filter(\.needsQuitConfirmation)
 
         guard !controllersNeedConfirmation.isEmpty else {
             return terminateSavingTabs()

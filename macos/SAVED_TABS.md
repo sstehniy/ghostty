@@ -12,7 +12,7 @@ When due, a tab returns to the top of the ordinary section with a **Woke** badge
 
 Pinned and snoozed tabs are saved independently of `window-save-state`, including when it is `never`. Changes are saved as they happen and refreshed periodically for best-effort crash recovery. Layout, directories, titles, colors, and supported agent-session references are saved, not raw terminal output or process memory.
 
-Quitting preserves saved tabs. When reviewing running windows before Quit, no window closes until every confirmation is approved; cancelling leaves them running.
+Quitting preserves saved tabs without running-process warnings. Only ordinary tabs participate in Quit's running-process confirmations. Explicitly closing a saved tab or window still uses the usual close warnings. When reviewing running windows before Quit, no window closes until every confirmation is approved; cancelling leaves them running.
 
 Closing a tab or its whole window removes it from the explicit store. **Close Other Tabs** and **Close Tabs to the Right** protect pinned and snoozed tabs. Unpinning or waking returns a tab to normal restoration rules. Overdue tabs are first brought back on reopening before their explicit saved record is removed.
 

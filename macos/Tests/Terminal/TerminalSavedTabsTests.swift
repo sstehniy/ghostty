@@ -102,6 +102,41 @@ struct TerminalSavedTabArchiveTests {
     }
 }
 
+struct TerminalSavedTabQuitTests {
+    @MainActor @Test(arguments: [false, true])
+    func savedTabsSkipQuitWarningsButKeepExplicitCloseWarnings(hasRunningProcess: Bool) throws {
+        let ghostty = try #require((NSApp.delegate as? AppDelegate)?.ghostty)
+        let controller: TerminalController
+        if hasRunningProcess {
+            var config = Ghostty.SurfaceConfiguration()
+            config.command = "/bin/sleep 60"
+            controller = TerminalController(ghostty, withBaseConfig: config)
+        } else {
+            let app = try #require(ghostty.app)
+            controller = TerminalController(ghostty, withSurfaceTree: .init(view: Ghostty.SurfaceView(app, deferTerminal: true)))
+        }
+        let window = try #require(controller.window)
+        defer { window.close() }
+        try #require(controller.needsQuitConfirmation == hasRunningProcess)
+        try #require(controller.windowCanBeClosedWithoutConfirmation() == !hasRunningProcess)
+
+        controller.sidebarItem.lifecycle.pin(true)
+        #expect(!controller.needsQuitConfirmation)
+        #expect(controller.windowCanBeClosedWithoutConfirmation() == !hasRunningProcess)
+
+        controller.sidebarItem.lifecycle.pin(false)
+        #expect(controller.needsQuitConfirmation == hasRunningProcess)
+
+        let snoozed = controller.sidebarItem.lifecycle.snooze(until: .distantFuture)
+        try #require(snoozed)
+        #expect(!controller.needsQuitConfirmation)
+        #expect(controller.windowCanBeClosedWithoutConfirmation() == !hasRunningProcess)
+
+        controller.sidebarItem.lifecycle.wake()
+        #expect(controller.needsQuitConfirmation == hasRunningProcess)
+    }
+}
+
 struct TerminalDormantRestoreTests {
     @MainActor @Test func savedGroupRestoresSplitFocusAndRetainsOrderThroughQuit() async throws {
         let ghostty = try #require((NSApp.delegate as? AppDelegate)?.ghostty)

@@ -1222,6 +1222,10 @@ class BaseTerminalController: NSWindowController,
         return !window.supportsUpdateAccessory
     }
 
+    var needsQuitConfirmation: Bool {
+        !windowCanBeClosedWithoutConfirmation()
+    }
+
     // MARK: NSWindowDelegate
 
     /// Check whether window should be closed without showing an alert

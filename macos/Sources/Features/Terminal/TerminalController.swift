@@ -194,6 +194,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     // MARK: Base Controller Overrides
 
+    override var needsQuitConfirmation: Bool {
+        !sidebarItem.lifecycle.isSaved && super.needsQuitConfirmation
+    }
+
     override func surfaceTreeDidChange(from: SplitTree<Ghostty.SurfaceView>, to: SplitTree<Ghostty.SurfaceView>) {
         super.surfaceTreeDidChange(from: from, to: to)
 
