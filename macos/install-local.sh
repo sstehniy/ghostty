@@ -80,6 +80,7 @@ if [[ $build -eq 1 ]]; then
       -scheme Ghostty \
       -configuration ReleaseLocal \
       SYMROOT="$MACOS_DIR/build" \
+      ENABLE_CODE_COVERAGE=NO \
       CODE_SIGN_STYLE=Manual \
       CODE_SIGN_IDENTITY="$identity_sha" \
       DEVELOPMENT_TEAM="$team_id" \
