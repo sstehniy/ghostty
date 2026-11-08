@@ -107,11 +107,14 @@ struct FloatPaneControllerTests {
         }
     }
 
-    @Test func floatingPaneMenuLivesUnderViewWithoutDefaultShortcuts() throws {
+    @Test func floatingPaneMenuLivesUnderViewAndOnlyDockHasADefaultShortcut() throws {
         let viewMenu = try #require(NSApp.mainMenu?.item(withTitle: "View")?.submenu)
         let floatMenu = try #require(viewMenu.item(withTitle: "Floating Panes")?.submenu)
         #expect(floatMenu.items.contains { ($0.representedObject as? String) == "new_float" })
-        #expect(floatMenu.items.allSatisfy { $0.keyEquivalent.isEmpty })
+        let dock = try #require(floatMenu.items.first { ($0.representedObject as? String) == "toggle_float_dock" })
+        #expect(dock.keyEquivalent == "f")
+        #expect(dock.keyEquivalentModifierMask.isSuperset(of: [.command, .control, .option]))
+        #expect(floatMenu.items.filter { $0 !== dock }.allSatisfy { $0.keyEquivalent.isEmpty })
     }
 
     @Test func dockAndPopOutKeepTheSurfaceAndProcess() throws {
@@ -290,13 +293,49 @@ struct FloatPaneControllerTests {
         #expect(controller.floats.isEmpty)
     }
 
-    @Test func refusesToFloatTheOnlyTreeSurface() throws {
-        let controller = try makeController()
+    @Test func floatingTheOnlyTreeSurfaceLeavesAFreshShellBehind() throws {
+        let controller = try makeController(live: true)
         defer { controller.window?.close() }
-        let surface = controller.surfaceTree.first
-        #expect(!controller.toggleFloatDock())
-        #expect(controller.surfaceTree.first === surface)
-        #expect(controller.floats.isEmpty)
+        let surface = try #require(controller.surfaceTree.first)
+        let process = try #require(surface.surface)
+        #expect(controller.toggleFloatDock())
+        #expect(controller.floats.first?.surface === surface)
+        #expect(surface.surface == process)
+        let replacement = try #require(controller.surfaceTree.first)
+        #expect(replacement !== surface)
+        #expect(!controller.surfaceTree.isSplit)
+        #expect(controller.treeFocusSurface === replacement)
+        #expect(controller.focusedSurface === surface)
+        let inherited = ghostty_surface_inherited_config(try #require(replacement.surface), GHOSTTY_SURFACE_CONTEXT_SPLIT)
+        #expect(inherited.font_size == 17)
+    }
+
+    @Test func stackPositionFollowsZOrderAndKeepsFocusWhenRaising() async throws {
+        let controller = try makeController(live: true)
+        defer { controller.window?.close() }
+        let first = try #require(controller.newFloat())
+        let second = try #require(controller.newFloat())
+        #expect(controller.floatStackPosition(first.id) == 0)
+        #expect(controller.floatStackPosition(second.id) == 1)
+        try await waitForLayout { controller.window?.firstResponder === second }
+        controller.toggleFloatMaximized(first)
+        #expect(controller.floatStackPosition(first.id) == 1)
+        #expect(controller.floatStackPosition(second.id) == 0)
+        try await waitForLayout { controller.window?.firstResponder === first }
+        #expect(controller.window?.firstResponder === first)
+        #expect(controller.floatStackPosition(UUID()) == -1)
+    }
+
+    @Test func maximizeHidesTheCardOnlyUntilItsGhostLands() async throws {
+        let controller = try makeController(live: true)
+        defer { controller.window?.close() }
+        let float = try #require(controller.newFloat())
+        let original = try #require(controller.floats.last?.frame)
+        controller.toggleFloatMaximized(float)
+        #expect(controller.floats.last?.frame == CGRect(x: 0, y: 0, width: 1, height: 1))
+        #expect(controller.floats.last?.resize?.from == original)
+        try await waitForLayout { controller.floats.last?.resize == nil }
+        #expect(controller.floats.last?.resize == nil)
     }
 
     @Test func visibilityAndCloseRestoreFocusAndNewFloatUnhides() throws {

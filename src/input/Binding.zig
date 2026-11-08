@@ -676,6 +676,7 @@ pub const Action = union(enum) {
     focus_float: FocusFloat,
 
     /// Dock a floating pane or pop a split out into a floating pane (macOS only).
+    /// If the split is the tab's only pane, a new shell takes its place.
     toggle_float_dock,
 
     /// Show or hide this tab's floating panes (macOS only).

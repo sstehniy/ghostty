@@ -17,9 +17,11 @@ struct TerminalFloatOverlay: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .topLeading) {
-                // Below the cards, so a restored card fades in on top of its landed ghost.
+                // Directly below the ghost's own card: over the floats its pane is above,
+                // and under its card so that fades in on top of the landed ghost.
                 ForEach(ghosts) { ghost in
                     FloatGhost(model: ghost)
+                        .zIndex(controller.floatStackPosition(ghost.paneID) - 0.5)
                 }
 
                 ForEach(controller.shownFloats) { pane in
@@ -31,13 +33,14 @@ struct TerminalFloatOverlay: View {
                         // flicker. A ghost card flies to or from the pill instead, and a restored
                         // card fades in once its ghost lands. Near zero rather than zero, since
                         // SwiftUI hides fully transparent views and they can't take focus.
-                        .opacity(isAwaitingGhost(pane.id) ? 0.001 : 1)
+                        .opacity(isAwaitingGhost(pane) ? 0.001 : 1)
                         .offset(x: frame.minX, y: frame.minY)
                         // Never give insertion an animated transition: SwiftUI re-hosts the
                         // terminal view when it ends, which drops first responder.
                         .transition(.asymmetric(
                             insertion: .identity,
                             removal: .opacity.animation(.easeOut(duration: 0.08))))
+                        .zIndex(controller.floatStackPosition(pane.id))
                 }
 
                 let collapsed = controller.collapsedFloats
@@ -46,6 +49,7 @@ struct TerminalFloatOverlay: View {
                         .padding(8)
                         .frame(width: geometry.size.width, alignment: .topTrailing)
                         .transition(.opacity.combined(with: .scale(scale: 0.8, anchor: .topTrailing)))
+                        .zIndex(Double(controller.floats.count))
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
@@ -58,6 +62,9 @@ struct TerminalFloatOverlay: View {
             .onChange(of: geometry.size) { controller.layoutFloats(in: $0) }
             .onChange(of: controller.shownFloats.map(\.id)) { shown in
                 animateCollapseChanges(to: shown, in: geometry.size)
+            }
+            .onChange(of: controller.floats.compactMap(\.resize?.id)) { _ in
+                launchResizeGhosts(in: geometry.size)
             }
         }
     }
@@ -78,7 +85,7 @@ struct TerminalFloatOverlay: View {
                 fadingIn[pane.id] = ghost.id
                 // The ghost holds its own copy; don't keep a full-size image per float.
                 controller.clearFloatSnapshot(pane.id)
-                DispatchQueue.main.asyncAfter(deadline: .now() + FloatGhost.duration * 0.85) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + FloatPane.ghostDuration * 0.85) {
                     guard fadingIn[pane.id] == ghost.id else { return }
                     withAnimation(.easeOut(duration: 0.1)) { fadingIn[pane.id] = nil }
                 }
@@ -88,18 +95,26 @@ struct TerminalFloatOverlay: View {
         lastCollapsed = Set(controller.collapsedFloats.map(\.id))
     }
 
-    /// True for a restored float from the moment it is shown until its ghost lands.
+    private func launchResizeGhosts(in size: CGSize) {
+        for pane in controller.floats {
+            guard let resize = pane.resize, !ghosts.contains(where: { $0.id == resize.id }) else { continue }
+            launchGhost(FloatGhost.Model(resize: resize, pane: pane, in: size))
+        }
+    }
+
+    /// True for a float that is being resized or restored, until its ghost lands.
     /// Derived from the previous state too, so the card never flashes for one frame
     /// before `animateCollapseChanges` runs.
-    private func isAwaitingGhost(_ id: UUID) -> Bool {
-        fadingIn[id] != nil || (!lastShown.contains(id) && lastCollapsed.contains(id))
+    private func isAwaitingGhost(_ pane: FloatPane) -> Bool {
+        pane.resize != nil || fadingIn[pane.id] != nil ||
+            (!lastShown.contains(pane.id) && lastCollapsed.contains(pane.id))
     }
 
     /// At most one ghost per float: a new collapse/restore replaces one still flying.
     private func launchGhost(_ ghost: FloatGhost.Model) {
         ghosts.removeAll { $0.paneID == ghost.paneID }
         ghosts.append(ghost)
-        DispatchQueue.main.asyncAfter(deadline: .now() + FloatGhost.duration + 0.15) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + FloatPane.ghostDuration + 0.15) {
             ghosts.removeAll { $0.id == ghost.id }
         }
     }
@@ -108,28 +123,43 @@ struct TerminalFloatOverlay: View {
 // MARK: - Collapse ghost
 
 /// A lightweight stand-in that flies between a float's frame and the collapsed pill,
-/// so the live terminal itself is never scaled.
+/// or between its normal and maximized frames, so the live terminal is never animated.
 private struct FloatGhost: View {
+    enum Kind { case collapse, restore, resize }
+
     struct Model: Identifiable {
-        let id = UUID()
+        let id: UUID
         let from: CGRect
         let to: CGRect
-        let collapsing: Bool
+        let kind: Kind
         let paneID: UUID
         let title: String
         let snapshot: NSImage?
+        var fromCornerRadius: CGFloat = 9
+        var toCornerRadius: CGFloat = 9
 
         init(from: CGRect, to: CGRect, collapsing: Bool, pane: FloatPane) {
+            self.id = UUID()
             self.from = from
             self.to = to
-            self.collapsing = collapsing
+            self.kind = collapsing ? .collapse : .restore
             self.paneID = pane.id
             self.title = pane.surface.title
             self.snapshot = pane.snapshot
         }
-    }
 
-    static let duration: Double = 0.26
+        init(resize: FloatPane.Resize, pane: FloatPane, in size: CGSize) {
+            self.id = resize.id
+            self.from = FloatPane.points(FloatPane.clamped(resize.from, in: size), in: size)
+            self.to = FloatPane.points(FloatPane.clamped(pane.frame, in: size), in: size)
+            self.kind = .resize
+            self.paneID = pane.id
+            self.title = pane.surface.title
+            self.snapshot = resize.snapshot
+            self.fromCornerRadius = pane.isMaximized ? 9 : 0
+            self.toCornerRadius = pane.isMaximized ? 0 : 9
+        }
+    }
 
     /// Approximate on-screen frame of the pill (top-right, 8 pt padding).
     static func pillFrame(in size: CGSize) -> CGRect {
@@ -141,13 +171,15 @@ private struct FloatGhost: View {
     @State private var landed = false
 
     var body: some View {
-        // The ghost keeps the float's own size and is scaled down toward the pill,
-        // so the snapshot and header shrink together instead of being squashed.
-        let full = model.collapsing ? model.from : model.to
+        // Toward the pill, the ghost keeps the float's own size and is scaled down, so
+        // the snapshot and header shrink together instead of being squashed. A resize
+        // animates the ghost's real frame, like a window resizing around its contents.
         let target = landed ? model.to : model.from
-        let scale = max(0.05, min(target.width / full.width, target.height / full.height))
-        let atPill = landed == model.collapsing
-        let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
+        let full = model.kind == .resize ? target : (model.kind == .collapse ? model.from : model.to)
+        let scale = model.kind == .resize ? 1 : max(0.05, min(target.width / full.width, target.height / full.height))
+        let atPill = model.kind != .resize && landed == (model.kind == .collapse)
+        let shape = RoundedRectangle(cornerRadius: landed ? model.toCornerRadius : model.fromCornerRadius,
+                                     style: .continuous)
 
         VStack(spacing: 0) {
             HStack(spacing: 6) {
@@ -166,7 +198,12 @@ private struct FloatGhost: View {
 
             ZStack(alignment: .topLeading) {
                 ghostty.config.backgroundColor.opacity(ghostty.config.backgroundOpacity)
-                if let snapshot = model.snapshot {
+                if let snapshot = model.snapshot, model.kind == .resize {
+                    // Zero minimums let a snapshot larger than the ghost be clipped
+                    // instead of pushing the layout out to its own size.
+                    Image(nsImage: snapshot)
+                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
+                } else if let snapshot = model.snapshot {
                     Image(nsImage: snapshot)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
@@ -185,7 +222,7 @@ private struct FloatGhost: View {
         .opacity(atPill ? 0 : 1)
         .allowsHitTesting(false)
         .onAppear {
-            withAnimation(.timingCurve(0.3, 0, 0.2, 1, duration: Self.duration)) { landed = true }
+            withAnimation(.timingCurve(0.3, 0, 0.2, 1, duration: FloatPane.ghostDuration)) { landed = true }
         }
     }
 }

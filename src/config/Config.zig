@@ -7456,6 +7456,13 @@ pub const Keybinds = struct {
                 .{ .toggle_fullscreen = {} },
             );
 
+            // Pop the focused split out into a floating pane, or dock the float.
+            try self.set.put(
+                alloc,
+                .{ .key = .{ .unicode = 'f' }, .mods = .{ .super = true, .ctrl = true, .alt = true } },
+                .{ .toggle_float_dock = {} },
+            );
+
             // Selection clipboard paste, matches Terminal.app
             try self.set.put(
                 alloc,

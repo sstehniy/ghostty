@@ -12,14 +12,26 @@ struct FloatPane: Identifiable {
     /// What the terminal looked like when it was last collapsed, drawn by the
     /// collapse/restore animation in place of the live (unanimatable) surface.
     var snapshot: NSImage?
+    /// Set while a maximize or restore plays. The live card stays hidden meanwhile.
+    var resize: Resize?
+
+    struct Resize {
+        let id = UUID()
+        let from: CGRect
+        let snapshot: NSImage?
+    }
 
     var id: UUID { surface.id }
     var isMaximized: Bool { restoreFrame != nil }
 
-    /// Used for showing, collapsing and maximizing floats. Never animate a change
-    /// that also reorders `floats` (raising): SwiftUI then re-inserts the surface
-    /// view and it loses first responder.
+    /// Used for showing and collapsing floats. Never animate a change that also
+    /// reorders `floats` (raising): SwiftUI then re-inserts the surface view and it
+    /// loses first responder. Never animate `frame` either: the live terminal would
+    /// resize, and the shell redraw, on every frame.
     static let animation = Animation.spring(response: 0.28, dampingFraction: 0.86)
+
+    /// How long a ghost takes to stand in for a float's live terminal.
+    static let ghostDuration: Double = 0.26
 
     static func normalized(_ frame: CGRect, in size: CGSize) -> CGRect {
         guard size.width > 0, size.height > 0 else { return .zero }
@@ -128,6 +140,12 @@ extension BaseTerminalController {
         floatsHidden ? floats : floats.filter(\.minimized)
     }
 
+    /// A float's place in the overlay's stacking order, or -1 once it is gone, so a
+    /// ghost outliving its float stays below every card.
+    func floatStackPosition(_ id: UUID) -> Double {
+        Double(floats.firstIndex { $0.id == id } ?? -1)
+    }
+
     func isFloatShown(_ surface: Ghostty.SurfaceView) -> Bool {
         shownFloats.contains(where: { $0.surface === surface })
     }
@@ -189,18 +207,29 @@ extension BaseTerminalController {
         floats[index].snapshot = nil
     }
 
+    /// The frame changes once, without animation, so the terminal resizes a single
+    /// time. A ghost plays the transition while the live card stays hidden.
     func toggleFloatMaximized(_ surface: Ghostty.SurfaceView) {
         focusSurface(surface)
         guard let index = floats.firstIndex(where: { $0.surface === surface }) else { return }
-        withAnimation(FloatPane.animation) {
-            if let restore = floats[index].restoreFrame {
-                floats[index].frame = FloatPane.clamped(restore, in: floatContainerSize)
-                floats[index].restoreFrame = nil
-            } else {
-                floats[index].restoreFrame = floats[index].frame
-                floats[index].frame = CGRect(x: 0, y: 0, width: 1, height: 1)
-            }
+        let resize = FloatPane.Resize(from: floats[index].frame, snapshot: surface.asImage)
+        if let restore = floats[index].restoreFrame {
+            floats[index].frame = FloatPane.clamped(restore, in: floatContainerSize)
+            floats[index].restoreFrame = nil
+        } else {
+            floats[index].restoreFrame = floats[index].frame
+            floats[index].frame = CGRect(x: 0, y: 0, width: 1, height: 1)
         }
+        floats[index].resize = resize
+        DispatchQueue.main.asyncAfter(deadline: .now() + FloatPane.ghostDuration * 0.85) { [weak self] in
+            self?.finishFloatResize(surface, id: resize.id)
+        }
+    }
+
+    private func finishFloatResize(_ surface: Ghostty.SurfaceView, id: UUID) {
+        guard let index = floats.firstIndex(where: { $0.surface === surface }),
+              floats[index].resize?.id == id else { return }
+        withAnimation(.easeOut(duration: 0.1)) { floats[index].resize = nil }
     }
 
     func focusFloat(_ direction: ghostty_action_focus_float_e) {
@@ -258,11 +287,21 @@ extension BaseTerminalController {
                 return false
             }
         } else {
-            guard surfaceTree.isSplit, let node = surfaceTree.root?.node(view: surface) else {
+            guard let node = surfaceTree.root?.node(view: surface) else {
                 NSSound.beep()
                 return false
             }
-            let tree = surfaceTree.removing(node)
+            // An empty tree closes the tab, so a fresh shell takes the only pane's place.
+            let tree: SplitTree<Ghostty.SurfaceView>
+            if surfaceTree.isSplit {
+                tree = surfaceTree.removing(node)
+            } else {
+                guard let replacement = makeTreeReplacement(for: surface) else {
+                    NSSound.beep()
+                    return false
+                }
+                tree = SplitTree(view: replacement)
+            }
             appendFloat(surface)
             surfaceTree = tree
             lastFocusedTreeSurface = surfaceTree.first
@@ -271,6 +310,17 @@ extension BaseTerminalController {
         undoManager?.removeAllActions(withTarget: self)
         focusSurface(surface)
         return true
+    }
+
+    /// A new shell configured like a split of `surface`.
+    private func makeTreeReplacement(for surface: Ghostty.SurfaceView) -> Ghostty.SurfaceView? {
+        guard let app = ghostty.app, let parent = surface.surface else { return nil }
+        var config = Ghostty.SurfaceConfiguration(from: ghostty_surface_inherited_config(
+            parent, GHOSTTY_SURFACE_CONTEXT_SPLIT))
+        if ghostty.config.sshInheritSession {
+            TerminalSSHReconnect.inherit(from: surface, to: &config, waitAfterCommand: ghostty.config.waitAfterCommand)
+        }
+        return Ghostty.SurfaceView(app, baseConfig: config)
     }
 
     func removeFloat(_ surface: Ghostty.SurfaceView) {
