@@ -13,6 +13,7 @@ struct TerminalFloatOverlay: View {
     /// float can't end a newer one early.
     @State private var fadingIn: [UUID: UUID] = [:]
     @State private var ghosts: [FloatGhost.Model] = []
+    @State private var pillFrame: CGRect = .zero
 
     var body: some View {
         GeometryReader { geometry in
@@ -26,8 +27,12 @@ struct TerminalFloatOverlay: View {
 
                 ForEach(controller.shownFloats) { pane in
                     let frame = FloatPane.points(FloatPane.clamped(pane.frame, in: geometry.size), in: geometry.size)
+                    let headerFrame = CGRect(origin: frame.origin,
+                                             size: CGSize(width: frame.width, height: TerminalFloatCard.headerHeight))
+                    let headerTrailingInset = headerFrame.intersects(pillFrame) ? frame.maxX - pillFrame.minX + 8 : 4
                     TerminalFloatCard(controller: controller, surface: pane.surface, frame: frame,
-                                      containerSize: geometry.size, isMaximized: pane.isMaximized)
+                                      containerSize: geometry.size, isMaximized: pane.isMaximized,
+                                      headerTrailingInset: headerTrailingInset)
                         .frame(width: frame.width, height: frame.height)
                         // The live terminal is never scaled: resizing it every frame makes it
                         // flicker. A ghost card flies to or from the pill instead, and a restored
@@ -43,9 +48,11 @@ struct TerminalFloatOverlay: View {
                         .zIndex(controller.floatStackPosition(pane.id))
                 }
 
-                let collapsed = controller.collapsedFloats
-                if !collapsed.isEmpty {
-                    TerminalFloatPill(controller: controller, panes: collapsed)
+                if !controller.floats.isEmpty {
+                    TerminalFloatPill(controller: controller)
+                        .onGeometryChange(for: CGRect.self) { proxy in
+                            proxy.frame(in: .named("floatingPanes"))
+                        } action: { pillFrame = $0 }
                         .padding(8)
                         .frame(width: geometry.size.width, alignment: .topTrailing)
                         .transition(.opacity.combined(with: .scale(scale: 0.8, anchor: .topTrailing)))
@@ -72,7 +79,7 @@ struct TerminalFloatOverlay: View {
     /// Launch ghosts between the pill and each float that was just collapsed or restored.
     /// Closed and newly created floats just fade.
     private func animateCollapseChanges(to shown: [UUID], in size: CGSize) {
-        let pill = FloatGhost.pillFrame(in: size)
+        let pill = pillFrame
         let shownSet = Set(shown), lastSet = Set(lastShown)
         for pane in controller.floats {
             let frame = FloatPane.points(FloatPane.clamped(pane.frame, in: size), in: size)
@@ -161,11 +168,6 @@ private struct FloatGhost: View {
         }
     }
 
-    /// Approximate on-screen frame of the pill (top-right, 8 pt padding).
-    static func pillFrame(in size: CGSize) -> CGRect {
-        CGRect(x: max(0, size.width - 8 - 92), y: 8, width: 92, height: 24)
-    }
-
     let model: Model
     @EnvironmentObject private var ghostty: Ghostty.App
     @State private var landed = false
@@ -230,11 +232,14 @@ private struct FloatGhost: View {
 // MARK: - Card
 
 private struct TerminalFloatCard: View {
+    static let headerHeight: CGFloat = 24
+
     @ObservedObject var controller: BaseTerminalController
     @ObservedObject var surface: Ghostty.SurfaceView
     let frame: CGRect
     let containerSize: CGSize
     let isMaximized: Bool
+    let headerTrailingInset: CGFloat
 
     @EnvironmentObject private var ghostty: Ghostty.App
     @Environment(\.displayScale) private var displayScale
@@ -295,6 +300,7 @@ private struct TerminalFloatCard: View {
             }
         }
         .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("floating-pane-\(surface.id)")
         .accessibilityLabel("Floating terminal pane")
     }
 
@@ -320,8 +326,8 @@ private struct TerminalFloatCard: View {
             }
         }
         .padding(.leading, 9)
-        .padding(.trailing, 4)
-        .frame(height: 24)
+        .padding(.trailing, headerTrailingInset)
+        .frame(height: Self.headerHeight)
         .background {
             ZStack {
                 Rectangle().fill(.regularMaterial)
@@ -410,69 +416,102 @@ private struct FloatHeaderButton: View {
     }
 }
 
-// MARK: - Collapsed pill
+// MARK: - Floating-pane pill
 
 private struct TerminalFloatPill: View {
     @ObservedObject var controller: BaseTerminalController
-    let panes: [FloatPane]
 
     @State private var expanded = false
+    @State private var paneToRestore: Ghostty.SurfaceView?
     @State private var pillHovered = false
 
+    private var allCollapsed: Bool { controller.shownFloats.isEmpty }
+    private var primaryAction: String {
+        allCollapsed ? "Show all floating panes" : "Collapse all floating panes"
+    }
+
     var body: some View {
-        VStack(alignment: .trailing, spacing: 0) {
+        HStack(spacing: 0) {
             Button {
-                controller.restoreAllFloats()
+                if allCollapsed { controller.restoreAllFloats() } else { controller.collapseAllFloats() }
             } label: {
                 HStack(spacing: 5) {
-                    Image(systemName: "rectangle.on.rectangle")
+                    Image(systemName: allCollapsed ? "rectangle.expand.vertical" : "rectangle.compress.vertical")
                         .font(.system(size: 10.5, weight: .medium))
-                    Text(panes.count == 1 ? "1 float" : "\(panes.count) floats")
+                        .frame(width: 13)
+                    Text(controller.floats.count == 1 ? "1 float" : "\(controller.floats.count) floats")
                         .font(.system(size: 11, weight: .medium))
                         .monospacedDigit()
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 8, weight: .bold))
-                        .rotationEffect(.degrees(expanded ? 180 : 0))
-                        .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 10)
+                .padding(.leading, 10)
+                .padding(.trailing, 8)
                 .frame(height: 24)
-                .background(Capsule().fill(.regularMaterial))
-                .overlay {
-                    Capsule().fill(Color.primary.opacity(pillHovered ? 0.08 : 0))
-                }
-                .overlay { Capsule().strokeBorder(Color.primary.opacity(0.18), lineWidth: 0.5) }
-                .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
-                .contentShape(Capsule())
+                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .onHover { pillHovered = $0 }
-            .help("Show all floating panes")
-            .accessibilityLabel("Show \(panes.count) collapsed floating panes")
+            .help(primaryAction)
+            .accessibilityLabel(primaryAction)
+            .accessibilityValue("\(controller.shownFloats.count) of \(controller.floats.count) visible")
+            .accessibilityIdentifier("float-pill-toggle")
 
-            if expanded {
-                VStack(alignment: .leading, spacing: 1) {
-                    ForEach(panes.reversed()) { pane in
-                        TerminalFloatPillRow(controller: controller, surface: pane.surface)
+            Rectangle()
+                .fill(Color.primary.opacity(0.18))
+                .frame(width: 0.5, height: 12)
+                .accessibilityHidden(true)
+
+            Button {
+                expanded.toggle()
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .rotationEffect(.degrees(expanded ? 180 : 0))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .help("Manage floating panes")
+            .accessibilityLabel("Manage floating panes")
+            .accessibilityIdentifier("float-pill-manage")
+            .popover(isPresented: $expanded, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Button("Show all floating panes") {
+                        expanded = false
+                        controller.restoreAllFloats()
                     }
+                    .disabled(controller.collapsedFloats.isEmpty)
+                    .accessibilityIdentifier("float-pill-show-all")
+                    Divider()
+                    ScrollView {
+                        VStack(spacing: 1) {
+                            ForEach(controller.floats.reversed()) { pane in
+                                TerminalFloatPillRow(controller: controller, surface: pane.surface,
+                                                     isShown: controller.isFloatShown(pane.surface)) {
+                                    paneToRestore = pane.surface
+                                    expanded = false
+                                }
+                            }
+                        }
+                    }
+                    .frame(height: min(280, CGFloat(controller.floats.count) * 35))
                 }
-                .padding(4)
-                .frame(minWidth: 180, maxWidth: 280)
-                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.regularMaterial))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.18), lineWidth: 0.5)
+                .buttonStyle(.plain)
+                .padding(8)
+                .frame(width: 260)
+                .onExitCommand { expanded = false }
+                .onDisappear {
+                    guard let surface = paneToRestore else { return }
+                    paneToRestore = nil
+                    // Let AppKit restore its previous responder before focusing the selected pane.
+                    DispatchQueue.main.async { controller.restoreFloat(surface) }
                 }
-                .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
-                // Top padding sits inside the hover area so moving down from the pill keeps it open.
-                .padding(.top, 4)
-                .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .topTrailing)))
+                .floatChromeCursor()
             }
         }
-        .contentShape(Rectangle())
-        .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.12)) { expanded = hovering }
-        }
+        .buttonStyle(.plain)
+        .background(Capsule().fill(.regularMaterial))
+        .overlay { Capsule().fill(Color.primary.opacity(pillHovered ? 0.08 : 0)).allowsHitTesting(false) }
+        .overlay { Capsule().strokeBorder(Color.primary.opacity(0.18), lineWidth: 0.5).allowsHitTesting(false) }
+        .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
+        .onHover { pillHovered = $0 }
         .floatChromeCursor()
     }
 }
@@ -490,51 +529,55 @@ private extension View {
 private struct TerminalFloatPillRow: View {
     @ObservedObject var controller: BaseTerminalController
     @ObservedObject var surface: Ghostty.SurfaceView
+    let isShown: Bool
+
+    let restore: () -> Void
 
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "terminal")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(surface.floatDisplayTitle)
-                    .font(.system(size: 11))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if let directory = surface.floatDisplayDirectory {
-                    Text(directory)
+        HStack(spacing: 4) {
+            Button(action: restore) {
+                HStack(spacing: 6) {
+                    Image(systemName: isShown ? "eye" : "eye.slash")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.head)
+                        .frame(width: 14)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(surface.floatDisplayTitle)
+                            .font(.system(size: 11))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        if let directory = surface.floatDisplayDirectory {
+                            Text(directory)
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.head)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(height: 34)
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            if hovering {
-                FloatHeaderButton(systemImage: "xmark", help: "Close floating pane", destructive: true) {
-                    controller.closeSurface(surface)
-                }
+            .buttonStyle(.plain)
+            .help(isShown ? "Focus this floating pane" : "Show this floating pane")
+            .accessibilityLabel(surface.floatDisplayTitle)
+            .accessibilityValue(isShown ? "Visible" : "Collapsed")
+            .accessibilityIdentifier("float-pill-pane-\(surface.id)")
+
+            FloatHeaderButton(systemImage: "xmark", help: "Close floating pane", destructive: true) {
+                controller.closeSurface(surface)
             }
         }
         .padding(.leading, 6)
         .padding(.trailing, 2)
-        // Fixed two-line height so rows without a separate directory line don't shrink.
-        .frame(height: 34)
         .background {
             RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .fill(hovering ? Color.accentColor.opacity(0.22) : .clear)
         }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            controller.restoreFloat(surface)
-        }
         .onHover { hovering = $0 }
-        .help("Restore this floating pane")
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAction { controller.restoreFloat(surface) }
     }
 }
 

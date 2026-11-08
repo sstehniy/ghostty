@@ -573,11 +573,13 @@ extension Ghostty {
             }
 
             if focused {
-                // On macOS 13+ we can store our continuous clock...
-                focusInstant = ContinuousClock.now
-
-                // We unset our bell state if we gained focus
-                bell = false
+                let instant = ContinuousClock.now
+                // AppKit can restore focus during a SwiftUI update when a popover closes.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.focusInstant = instant
+                    if self.focused { self.bell = false }
+                }
 
                 // Remove any notifications for this surface once we gain focus.
                 if !notificationIdentifiers.isEmpty {

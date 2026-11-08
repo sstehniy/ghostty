@@ -135,7 +135,7 @@ extension BaseTerminalController {
         floatsHidden ? [] : floats.filter { !$0.minimized }
     }
 
-    /// Floats represented by the collapsed pill, in z-order.
+    /// Floats that are currently collapsed, in z-order.
     var collapsedFloats: [FloatPane] {
         floatsHidden ? floats : floats.filter(\.minimized)
     }

@@ -822,7 +822,10 @@ class BaseTerminalController: NSWindowController,
 
         focusedSurfaceDidChange(to: nextSurface)
         DispatchQueue.main.async {
-            Ghostty.moveFocus(to: nextSurface, from: source)
+            Ghostty.moveFocus(to: nextSurface, from: source) { [weak self] in
+                guard let self, self.focusedSurface !== nextSurface else { return }
+                self.focusedSurfaceDidChange(to: nextSurface)
+            }
         }
     }
 
@@ -972,15 +975,14 @@ class BaseTerminalController: NSWindowController,
     // MARK: TerminalViewDelegate
 
     /// SwiftUI focus reports can arrive after focus has already moved on, naming the
-    /// previous surface. When floats are involved, accepting one would refocus and
-    /// raise the wrong float and corrupt next/previous traversal, so a report that
-    /// contradicts the window's actual first responder is dropped. Explicit requests
+    /// previous surface. Accepting one would desynchronize navigation and could
+    /// raise the wrong float, so a report that contradicts the window's actual
+    /// first responder is dropped. Explicit requests
     /// (focusSurface) call focusedSurfaceDidChange directly and are never filtered.
     func focusedSurfaceReported(_ surface: Ghostty.SurfaceView?) {
         if let surface,
            let responder = window?.firstResponder as? Ghostty.SurfaceView,
-           responder !== surface,
-           floats.contains(where: { $0.surface === surface || $0.surface === responder }) {
+           responder !== surface {
             return
         }
         focusedSurfaceDidChange(to: surface)

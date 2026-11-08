@@ -303,10 +303,13 @@ struct FloatPaneControllerTests {
         try #require(window.firstResponder === tree)
 
         func navigate(_ direction: String, to expected: Ghostty.SurfaceView) async throws {
-            let source = try #require(controller.focusedSurface?.surface)
+            let sourceView = try #require(controller.focusedSurface)
+            let source = try #require(sourceView.surface)
             let action = "goto_split:\(direction)"
             try #require(ghostty_surface_binding_action(source, action, UInt(action.utf8.count)))
+            controller.focusedSurfaceReported(sourceView)
             try await waitForLayout { window.firstResponder === expected }
+            controller.focusedSurfaceReported(sourceView)
             #expect(controller.focusedSurface === expected)
             try #require(window.firstResponder === expected)
         }
