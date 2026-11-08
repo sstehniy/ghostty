@@ -96,35 +96,40 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                         }
                     }
 
-                    TerminalSplitTreeView(
-                        tree: viewModel.surfaceTree,
-                        action: { delegate?.performSplitAction($0) })
-                        .overlay {
-                            if let controller = viewModel as? TerminalController {
-                                TerminalFloatOverlay(controller: controller)
-                            }
+                    ZStack {
+                        TerminalSplitTreeView(
+                            tree: viewModel.surfaceTree,
+                            action: { delegate?.performSplitAction($0) })
+
+                        // A sibling of the tree, not an overlay on it: the tree's identity
+                        // changes with its structure, and an attached overlay would exist
+                        // twice during that change. A second copy takes a float's terminal
+                        // view and then drops it out of the window when it goes away.
+                        if let controller = viewModel as? TerminalController {
+                            TerminalFloatOverlay(controller: controller)
                         }
-                        .environmentObject(ghostty)
-                        .ghosttyLastFocusedSurface(lastFocusedSurface)
-                        .focused($focused)
-                        .onAppear { self.focused = true }
-                        .onChange(of: focusedSurface) { newValue in
-                            // We want to keep track of our last focused surface so even if
-                            // we lose focus we keep this set to the last non-nil value.
-                            if newValue != nil {
-                                lastFocusedSurface = .init(newValue)
-                                self.delegate?.focusedSurfaceReported(newValue)
-                            }
+                    }
+                    .environmentObject(ghostty)
+                    .ghosttyLastFocusedSurface(lastFocusedSurface)
+                    .focused($focused)
+                    .onAppear { self.focused = true }
+                    .onChange(of: focusedSurface) { newValue in
+                        // We want to keep track of our last focused surface so even if
+                        // we lose focus we keep this set to the last non-nil value.
+                        if newValue != nil {
+                            lastFocusedSurface = .init(newValue)
+                            self.delegate?.focusedSurfaceReported(newValue)
                         }
-                        .onChange(of: pwdURL) { newValue in
-                            self.delegate?.pwdDidChange(to: newValue)
-                        }
-                        .onChange(of: cellSize) { newValue in
-                            guard let size = newValue else { return }
-                            self.delegate?.cellSizeDidChange(to: size)
-                        }
-                        .frame(idealWidth: lastFocusedSurface?.value?.initialSize?.width,
-                               idealHeight: lastFocusedSurface?.value?.initialSize?.height)
+                    }
+                    .onChange(of: pwdURL) { newValue in
+                        self.delegate?.pwdDidChange(to: newValue)
+                    }
+                    .onChange(of: cellSize) { newValue in
+                        guard let size = newValue else { return }
+                        self.delegate?.cellSizeDidChange(to: size)
+                    }
+                    .frame(idealWidth: lastFocusedSurface?.value?.initialSize?.width,
+                           idealHeight: lastFocusedSurface?.value?.initialSize?.height)
                 }
                 // Ignore safe area to extend up in to the titlebar region if we have the "hidden" titlebar style
                 .ignoresSafeArea(.container, edges: ghostty.config.macosTitlebarStyle == .hidden ? .top : [])

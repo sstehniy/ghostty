@@ -117,6 +117,61 @@ struct FloatPaneControllerTests {
         #expect(floatMenu.items.filter { $0 !== dock }.allSatisfy { $0.keyEquivalent.isEmpty })
     }
 
+    @Test(arguments: [false, true])
+    func poppedOutTerminalStaysAttachedToTheWindow(fromSplit: Bool) async throws {
+        let controller = try makeController(live: true)
+        let window = try #require(controller.window)
+        defer { window.close() }
+        window.orderFront(nil)
+        let surface = try #require(controller.surfaceTree.first)
+        if fromSplit {
+            let sibling = Ghostty.SurfaceView(try #require(controller.ghostty.app), deferTerminal: true)
+            controller.surfaceTree = try controller.surfaceTree.inserting(view: sibling, at: surface, direction: .right)
+        }
+        try await waitForLayout { surface.window === window }
+        try #require(surface.window === window)
+
+        // The surface can be taken while SwiftUI tears down the old tree, after the
+        // float first mounts, so waiting for it to appear isn't enough.
+        let settle = Duration.milliseconds(400)
+        #expect(controller.toggleFloatDock(surface))
+        try await Task.sleep(for: settle)
+        #expect(surface.window === window)
+        #expect(window.firstResponder === surface)
+        #expect(surface.bounds.width > 240)
+        #expect(window.contentView?.bounds.intersects(surface.convert(surface.bounds, to: window.contentView)) == true)
+
+        #expect(controller.toggleFloatDock(surface))
+        try await Task.sleep(for: settle)
+        #expect(controller.surfaceTree.contains(surface))
+        #expect(surface.window === window)
+        #expect(window.firstResponder === surface)
+
+        #expect(controller.toggleFloatDock(surface))
+        try await Task.sleep(for: settle)
+        #expect(controller.floats.last?.surface === surface)
+        #expect(surface.window === window)
+        #expect(window.firstResponder === surface)
+    }
+
+    @Test func treeChangesDoNotTakeFocusFromAFloat() async throws {
+        let controller = try makeController(live: true)
+        let window = try #require(controller.window)
+        defer { window.close() }
+        window.orderFront(nil)
+        let tree = try #require(controller.surfaceTree.first)
+        let float = try #require(controller.newFloat())
+        try await waitForLayout { window.firstResponder === float }
+        try #require(window.firstResponder === float)
+
+        // Set directly: no focus restoration runs, as when undo brings back a closed pane.
+        let sibling = Ghostty.SurfaceView(try #require(controller.ghostty.app), deferTerminal: true)
+        controller.surfaceTree = try controller.surfaceTree.inserting(view: sibling, at: tree, direction: .right)
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(float.window === window)
+        #expect(window.firstResponder === float)
+    }
+
     @Test func dockAndPopOutKeepTheSurfaceAndProcess() throws {
         let controller = try makeController(live: true)
         defer { controller.window?.close() }
