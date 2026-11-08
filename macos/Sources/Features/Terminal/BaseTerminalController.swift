@@ -43,12 +43,12 @@ class BaseTerminalController: NSWindowController,
     /// The currently focused surface.
     @Published var focusedSurface: Ghostty.SurfaceView? {
         didSet {
-            // Keep an ongoing next/previous cycle while focus moves between its floats.
+            // Keep an ongoing next/previous cycle while focus moves between its panes.
             // SwiftUI echoes focus changes late (sometimes for the previous float), so
             // resetting on every change would rebuild the cycle from a scrambled z-order.
             if focusedSurface !== oldValue,
-               !(focusedSurface.map { surface in floatFocusOrder?.contains(surface.id) ?? false } ?? false) {
-                floatFocusOrder = nil
+               !(focusedSurface.map { surface in paneFocusOrder?.contains(surface.id) ?? false } ?? false) {
+                paneFocusOrder = nil
             }
             if let focusedSurface, surfaceTree.contains(focusedSurface) {
                 lastFocusedTreeSurface = focusedSurface
@@ -66,12 +66,12 @@ class BaseTerminalController: NSWindowController,
         return surfaceTree.first
     }
 
-    /// Z-order at the start of consecutive next/previous focus actions.
-    var floatFocusOrder: [UUID]?
+    /// Pane order at the start of consecutive next/previous focus actions.
+    var paneFocusOrder: [UUID]?
 
     @Published var floats: [FloatPane] = [] {
         didSet {
-            if Set(oldValue.map(\.id)) != Set(floats.map(\.id)) { floatFocusOrder = nil }
+            if Set(oldValue.map(\.id)) != Set(floats.map(\.id)) { paneFocusOrder = nil }
             Self.updateSurfaceControllers(
                 self,
                 from: Array(surfaceTree) + oldValue.map(\.surface),
@@ -98,6 +98,7 @@ class BaseTerminalController: NSWindowController,
     /// The tree of splits within this terminal window.
     @Published var surfaceTree: SplitTree<Ghostty.SurfaceView> = .init() {
         didSet {
+            if oldValue.map(\.id) != surfaceTree.map(\.id) { paneFocusOrder = nil }
             Self.updateSurfaceControllers(self, from: Array(oldValue) + floats.map(\.surface), to: allSurfaces)
             surfaceTreeDidChange(from: oldValue, to: surfaceTree)
         }
@@ -384,6 +385,30 @@ class BaseTerminalController: NSWindowController,
             undoAction: "New Split")
 
         return newView
+    }
+
+    func splitFocusTarget(
+        from source: Ghostty.SurfaceView,
+        direction: Ghostty.SplitFocusDirection
+    ) -> Ghostty.SurfaceView? {
+        guard allSurfaces.contains(source) else { return nil }
+        if direction == .next || direction == .previous {
+            let panes = Array(surfaceTree) + shownFloats.map(\.surface)
+            guard panes.count > 1 else { return nil }
+            let ids = panes.map(\.id)
+            // Raising floats changes z-order, not the order of an ongoing cycle.
+            let order = paneFocusOrder.flatMap { Set($0) == Set(ids) ? $0 : nil } ?? ids
+            guard let current = order.firstIndex(of: source.id) else { return nil }
+            let offset = direction == .previous ? -1 : 1
+            let targetID = order[(current + offset + order.count) % order.count]
+            paneFocusOrder = order
+            return panes.first { $0.id == targetID }
+        }
+
+        guard surfaceTree.isSplit,
+              let target = surfaceTree.contains(source) ? source : treeFocusSurface,
+              let node = surfaceTree.root?.node(view: target) else { return nil }
+        return surfaceTree.focusTarget(for: direction.toSplitTreeFocusDirection(), from: node)
     }
 
     /// Move focus to a surface view.
@@ -782,22 +807,10 @@ class BaseTerminalController: NSWindowController,
 
     @objc private func ghosttyDidFocusSplit(_ notification: Notification) {
         guard let source = notification.object as? Ghostty.SurfaceView,
-              allSurfaces.contains(source),
-              let target = surfaceTree.contains(source) ? source : treeFocusSurface else { return }
+              let direction = notification.userInfo?[Ghostty.Notification.SplitDirectionKey] as? Ghostty.SplitFocusDirection,
+              let nextSurface = splitFocusTarget(from: source, direction: direction) else { return }
 
-        // Get the direction from the notification
-        guard let directionAny = notification.userInfo?[Ghostty.Notification.SplitDirectionKey] else { return }
-        guard let direction = directionAny as? Ghostty.SplitFocusDirection else { return }
-
-        // Find the node for the target surface
-        guard let targetNode = surfaceTree.root?.node(view: target) else { return }
-
-        // Find the next surface to focus
-        guard let nextSurface = surfaceTree.focusTarget(for: direction.toSplitTreeFocusDirection(), from: targetNode) else {
-            return
-        }
-
-        if surfaceTree.zoomed != nil {
+        if surfaceTree.zoomed != nil, surfaceTree.contains(nextSurface) {
             if derivedConfig.splitPreserveZoom.contains(.navigation) {
                 surfaceTree = SplitTree(
                     root: surfaceTree.root,
@@ -807,9 +820,9 @@ class BaseTerminalController: NSWindowController,
             }
         }
 
-        // Move focus to the next surface
+        focusedSurfaceDidChange(to: nextSurface)
         DispatchQueue.main.async {
-            Ghostty.moveFocus(to: nextSurface, from: target)
+            Ghostty.moveFocus(to: nextSurface, from: source)
         }
     }
 

@@ -282,6 +282,77 @@ struct FloatPaneControllerTests {
         #expect(controller.surfaceTree.contains(tree))
     }
 
+    @Test(arguments: [false, true])
+    func splitNavigationIncludesShownFloatsAndSkipsCollapsedOnes(withSplit: Bool) async throws {
+        let controller = try makeController(live: true)
+        let window = try #require(controller.window)
+        defer { window.close() }
+        let tree = try #require(controller.surfaceTree.first)
+        var treePanes = [tree]
+        if withSplit {
+            var config = Ghostty.SurfaceConfiguration()
+            config.command = "/bin/sleep 60"
+            config.workingDirectory = FileManager.default.temporaryDirectory.path
+            treePanes.append(try #require(controller.newSplit(at: tree, direction: .right, baseConfig: config)))
+        }
+        let first = try #require(controller.newFloat())
+        let second = try #require(controller.newFloat())
+        let third = try #require(controller.newFloat())
+        controller.focusSurface(tree)
+        try await waitForLayout { window.firstResponder === tree }
+        try #require(window.firstResponder === tree)
+
+        func navigate(_ direction: String, to expected: Ghostty.SurfaceView) async throws {
+            let source = try #require(controller.focusedSurface?.surface)
+            let action = "goto_split:\(direction)"
+            try #require(ghostty_surface_binding_action(source, action, UInt(action.utf8.count)))
+            try await waitForLayout { window.firstResponder === expected }
+            #expect(controller.focusedSurface === expected)
+            try #require(window.firstResponder === expected)
+        }
+
+        let cycle = Array(treePanes.dropFirst()) + [first, second, third, tree]
+        for _ in 0..<2 {
+            for expected in cycle { try await navigate("next", to: expected) }
+        }
+        for expected in [third, second, first] + treePanes.reversed() {
+            try await navigate("previous", to: expected)
+        }
+
+        controller.minimizeFloat(second)
+        for expected in Array(treePanes.dropFirst()) + [third, first, tree] {
+            try await navigate("next", to: expected)
+        }
+        #expect(controller.collapsedFloats.map(\.surface) == [second])
+        controller.collapseAllFloats()
+        if withSplit {
+            try await navigate("next", to: treePanes[1])
+            try await navigate("next", to: tree)
+        } else {
+            let source = try #require(tree.surface)
+            let action = "goto_split:next"
+            #expect(!ghostty_surface_binding_action(source, action, UInt(action.utf8.count)))
+        }
+        #expect(controller.floatsHidden)
+
+        controller.restoreAllFloats()
+        try await waitForLayout { window.firstResponder === first }
+        try await navigate("previous", to: third)
+        try await navigate("previous", to: second)
+
+        if withSplit {
+            let root = try #require(controller.surfaceTree.root)
+            let zoomed = try #require(root.node(view: tree))
+            controller.surfaceTree = SplitTree(root: root, zoomed: zoomed)
+            controller.focusSurface(tree)
+            try await waitForLayout { window.firstResponder === tree }
+            try await navigate("previous", to: first)
+            #expect(controller.surfaceTree.zoomed == zoomed)
+            try await navigate("right", to: treePanes[1])
+            #expect(controller.surfaceTree.zoomed == nil)
+        }
+    }
+
     @Test func navigationTraversesThreeFloatsInBothDirectionsAfterRaising() async throws {
         let controller = try makeController(live: true)
         defer { controller.window?.close() }

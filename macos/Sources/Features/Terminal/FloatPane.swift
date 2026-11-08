@@ -179,7 +179,7 @@ extension BaseTerminalController {
         let wasFocused = focusedSurface === surface
         if isFloatShown(surface) { floats[index].snapshot = surface.asImage }
         withAnimation(FloatPane.animation) { floats[index].minimized = true }
-        floatFocusOrder = nil
+        paneFocusOrder = nil
         if wasFocused, let target = shownFloats.last?.surface ?? treeFocusSurface { focusSurface(target) }
     }
 
@@ -250,7 +250,7 @@ extension BaseTerminalController {
         // A cached order is only valid for the same set of shown floats: restoring
         // floats without a focus change would otherwise leave them out of the cycle.
         let shownIDs = shown.map(\.id)
-        let order = floatFocusOrder.flatMap { Set($0) == Set(shownIDs) ? $0 : nil } ?? shownIDs
+        let order = paneFocusOrder.flatMap { Set($0) == Set(shownIDs) ? $0 : nil } ?? shownIDs
         guard let topmost = shown.last?.id else { return }
         var targetID = topmost
         // focusedSurface can be stale: SwiftUI may report an older surface after a
@@ -263,7 +263,7 @@ extension BaseTerminalController {
         }
         guard let target = floats.first(where: { $0.id == targetID })?.surface else { return }
         focusSurface(target)
-        floatFocusOrder = order
+        paneFocusOrder = order
     }
 
     func toggleFloatsVisible() {

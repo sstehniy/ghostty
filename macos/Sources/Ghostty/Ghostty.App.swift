@@ -1414,21 +1414,10 @@ extension Ghostty {
                     guard let surfaceView = self.surfaceView(from: surface) else { return false }
                     guard let controller = surfaceView.window?.windowController as? BaseTerminalController else { return false }
 
-                    // If the window has no splits, the action is not performable
-                    guard controller.surfaceTree.isSplit else { return false }
-
-                    // Convert the C API direction to our Swift type
                     guard let splitDirection = SplitFocusDirection.from(direction: direction) else { return false }
 
-                    // Find the current node in the tree
-                    let treeSurface = controller.surfaceTree.contains(surfaceView) ? surfaceView : controller.treeFocusSurface
-                    guard let treeSurface, let targetNode = controller.surfaceTree.root?.node(view: treeSurface) else { return false }
-
-                    // Check if a split actually exists in the target direction before
-                    // returning true. This ensures performable keybinds only consume
-                    // the key event when we actually perform navigation.
-                    let focusDirection: SplitTree<Ghostty.SurfaceView>.FocusDirection = splitDirection.toSplitTreeFocusDirection()
-                    guard controller.surfaceTree.focusTarget(for: focusDirection, from: targetNode) != nil else {
+                    // Only consume performable bindings when navigation has a target.
+                    guard controller.splitFocusTarget(from: surfaceView, direction: splitDirection) != nil else {
                         return false
                     }
 
