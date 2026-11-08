@@ -821,7 +821,7 @@ class BaseTerminalController: NSWindowController,
         }
 
         focusedSurfaceDidChange(to: nextSurface)
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [self] in
             Ghostty.moveFocus(to: nextSurface, from: source) { [weak self] in
                 guard let self, self.focusedSurface !== nextSurface else { return }
                 self.focusedSurfaceDidChange(to: nextSurface)
