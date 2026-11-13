@@ -68,6 +68,9 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
         // Save our config in case we need to reapply
         lastSurfaceConfig = surfaceConfig
 
+        // AppKit can restore the separator when it rebuilds the tab bar.
+        syncTitlebarSeparator()
+
         // Every time we change appearance, set KVO up again in case any of our
         // references changed (e.g. tabGroup is new).
         setupKVO()
@@ -82,12 +85,24 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
     override var paintsTitlebarBackground: Bool { true }
 
     override func titlebarBackgroundDidChange() {
+        syncTitlebarSeparator()
         if #available(macOS 26.0, *) {
             applyTitlebarBackgroundTahoe()
         } else if let titlebarContainer {
             titlebarContainer.wantsLayer = true
             titlebarContainer.layer?.backgroundColor = titlebarBackgroundColor?.cgColor
         }
+    }
+
+    /// While the titlebar shares the sidebar's chrome there is no edge to mark, and
+    /// AppKit leaves a stray separator after the hidden tab bar is shown and hidden
+    /// again (collapsing and reopening the sidebar). Otherwise keep the default,
+    /// which native fullscreen replaces with none.
+    func syncTitlebarSeparator() {
+        let style: NSTitlebarSeparatorStyle = chromeColor != nil || styleMask.contains(.fullScreen)
+            ? .none
+            : .automatic
+        if titlebarSeparatorStyle != style { titlebarSeparatorStyle = style }
     }
 
     /// When we have transparency, we need to set the titlebar background to match the

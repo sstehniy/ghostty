@@ -63,4 +63,28 @@ struct TerminalTabSidebarAppearanceTests {
         let opaque = try components(TerminalTabSidebarAppearance.chromeColor(for: srgb(0x1d2021, alpha: 0.8), opaque: true))
         #expect(opaque.a == 1)
     }
+
+    /// Collapsing and reopening the sidebar shows and hides the native tab bar, after
+    /// which AppKit leaves a separator under the titlebar. It must stay off while the
+    /// titlebar shares the sidebar chrome, and return to the default without it.
+    @MainActor @Test func titlebarSeparatorStaysOffWhileChromeIsShown() {
+        let window = TransparentTitlebarTerminalWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: true)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+
+        window.chromeColor = .black
+        #expect(window.titlebarSeparatorStyle == .none)
+
+        // AppKit restores a separator when the hidden tab bar is rebuilt.
+        window.titlebarSeparatorStyle = .line
+        window.syncTitlebarSeparator()
+        #expect(window.titlebarSeparatorStyle == .none)
+
+        window.chromeColor = nil
+        #expect(window.titlebarSeparatorStyle == .automatic)
+    }
 }
