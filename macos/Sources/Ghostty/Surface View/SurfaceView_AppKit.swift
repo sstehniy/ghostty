@@ -245,7 +245,10 @@ extension Ghostty {
 
         func startDeferredTerminal() {
             guard var config = deferredConfiguration,
-                  let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return }
+                  let appDelegate = NSApp.delegate as? AppDelegate,
+                  let app = appDelegate.ghostty.app else { return }
+            // Dormant views miss surface config updates until their terminal starts.
+            derivedConfig = DerivedConfig(appDelegate.ghostty.config)
             deferredConfiguration = nil
             var resumedAgent = false
             if let restoration = pendingRestoration {

@@ -138,6 +138,39 @@ struct TerminalSavedTabQuitTests {
 }
 
 struct TerminalDormantRestoreTests {
+    @MainActor @Test(arguments: [false, true])
+    func restoredTabUsesCurrentThemeWhenStarted(isDark: Bool) throws {
+        let ghostty = try #require((NSApp.delegate as? AppDelegate)?.ghostty)
+        let app = try #require(ghostty.app)
+        let originalConfig = try #require(ghostty.config.config)
+        let original = try #require(ghostty_config_clone(originalConfig))
+        defer {
+            ghostty_app_update_config(app, original)
+            ghostty_config_free(original)
+        }
+        let config = try TemporaryConfig("background = \(isDark ? "ffffff" : "000000")")
+        ghostty_app_update_config(app, try #require(config.config))
+
+        let encoder = JSONEncoder()
+        encoder.userInfo[.durableTabSnapshot] = true
+        let data = try encoder.encode(Ghostty.SurfaceView(app, deferTerminal: true))
+        let decoder = JSONDecoder()
+        decoder.userInfo[.durableTabSnapshot] = true
+        let pane = try decoder.decode(Ghostty.SurfaceView.self, from: data)
+        let controller = TerminalController(ghostty, withSurfaceTree: .init(view: pane))
+        let window = try #require(controller.window as? TerminalWindow)
+        defer { window.close() }
+        #expect(pane.surface == nil)
+        #expect(window.preferredBackgroundColor?.isLightColor == isDark)
+
+        try config.reload("background = \(isDark ? "000000" : "ffffff")")
+        ghostty_app_update_config(app, try #require(config.config))
+        pane.startDeferredTerminal()
+
+        #expect(pane.surface != nil)
+        #expect(window.preferredBackgroundColor?.isLightColor == !isDark)
+    }
+
     @MainActor @Test func savedGroupRestoresSplitFocusAndRetainsOrderThroughQuit() async throws {
         let ghostty = try #require((NSApp.delegate as? AppDelegate)?.ghostty)
         let app = try #require(ghostty.app)
