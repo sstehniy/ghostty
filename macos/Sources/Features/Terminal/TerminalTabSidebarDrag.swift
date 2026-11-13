@@ -62,6 +62,8 @@ final class TerminalTabSidebarDrag: ObservableObject {
     private var timer: Timer?
     private var pointer = CGPoint.zero
     private var previousPointerY: CGFloat = 0
+    /// The width of a row in the dragged section, which the ghost matches.
+    private var rowWidth: CGFloat = 0
     private var tracking = false
     private var revealTarget = false
     var reduceMotion = false
@@ -91,9 +93,11 @@ final class TerminalTabSidebarDrag: ObservableObject {
         let origin = CGPoint(x: contentFrame.minX + Self.padding,
             y: contentFrame.minY + Self.padding + CGFloat(source.index) * Self.step)
         let start = gesture.startLocation
-        guard start.x < container.bounds.maxX - Self.padding - TerminalTabSidebarRow.trailingControlsWidth - 6 else {
+        // Measure from the section's own content: snoozed rows sit inset in their tray.
+        guard start.x < contentFrame.maxX - Self.padding - TerminalTabSidebarRow.trailingControlsWidth - 6 else {
             return
         }
+        rowWidth = max(0, contentFrame.width - 2 * Self.padding)
         self.commit = commit
         self.pointer = gesture.location
         previousPointerY = start.y
@@ -201,7 +205,7 @@ final class TerminalTabSidebarDrag: ObservableObject {
         guard let session, let container, let ghost, let parent = ghost.superview else { return }
         let origin = origin ?? CGPoint(x: pointer.x - session.grabOffset.x, y: pointer.y - session.grabOffset.y)
         let rect = CGRect(x: origin.x - 12, y: origin.y - 12,
-            width: max(0, container.bounds.width - 2 * Self.padding) + 24,
+            width: rowWidth + 24,
             height: TerminalTabSidebarRow.height + 24)
         let frame = parent.convert(rect, from: container)
         if animated, !reduceMotion {

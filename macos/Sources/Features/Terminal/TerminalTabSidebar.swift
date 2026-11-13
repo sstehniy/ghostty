@@ -31,6 +31,43 @@ final class TerminalTabSidebarAppearance: ObservableObject {
     /// don't show through.
     @Published var lifted: Color = Color(nsColor: .controlBackgroundColor)
 
+    /// The chrome tone shared by the sidebar and the titlebar: a step away from the
+    /// terminal background so the terminal reads as a sheet resting on it. Darker on
+    /// dark and light themes alike, except near black, where darker would vanish.
+    /// Keeps the input's alpha.
+    static func chromeColor(for background: NSColor) -> NSColor {
+        let opaque = background.withAlphaComponent(1)
+        let alpha = (background.usingColorSpace(.sRGB) ?? background).alphaComponent
+        let blended: NSColor
+        if opaque.luminance < 0.03 {
+            blended = blend(opaque, toward: 1, fraction: 0.07)
+        } else if opaque.isLightColor {
+            blended = blend(opaque, toward: 0, fraction: 0.06)
+        } else {
+            blended = blend(opaque, toward: 0, fraction: 0.32)
+        }
+        return blended.withAlphaComponent(alpha)
+    }
+
+    /// Blend each sRGB component toward a gray level. `NSColor.blended` mixes in a
+    /// generic color space, which drifts from the sRGB values themes are written in.
+    static func blend(_ color: NSColor, toward gray: CGFloat, fraction: CGFloat) -> NSColor {
+        let rgb = color.usingColorSpace(.sRGB) ?? color
+        func mix(_ value: CGFloat) -> CGFloat { value + (gray - value) * fraction }
+        return NSColor(
+            srgbRed: mix(rgb.redComponent),
+            green: mix(rgb.greenComponent),
+            blue: mix(rgb.blueComponent),
+            alpha: rgb.alphaComponent)
+    }
+
+    /// The chrome color as the sidebar and titlebar draw it: opaque while the window
+    /// is, otherwise at the terminal's alpha.
+    static func chromeColor(for background: NSColor, opaque: Bool) -> NSColor {
+        let chrome = chromeColor(for: background)
+        return opaque ? chrome.withAlphaComponent(1) : chrome
+    }
+
     /// Derive the sidebar colors from the window background.
     ///
     /// - Parameters:
@@ -41,21 +78,19 @@ final class TerminalTabSidebarAppearance: ObservableObject {
         let rgb = backgroundColor.usingColorSpace(.sRGB) ?? backgroundColor
         let isLight = rgb.withAlphaComponent(1).isLightColor
         let foregroundColor: NSColor = isLight ? .black : .white
+        let chrome = Self.chromeColor(for: rgb, opaque: opaque)
 
         let background: Color
         if glass {
             // The glass view behind the container already draws the background.
             background = .clear
         } else {
-            // Use the terminal background as is so the sidebar continues the
-            // titlebar above it. A hairline separates it from the terminal.
-            let alpha = opaque ? 1 : rgb.alphaComponent
-            background = Color(nsColor: rgb.withAlphaComponent(alpha))
+            // The sidebar shares the chrome tone with the titlebar above it.
+            background = Color(nsColor: chrome)
         }
 
         if self.background != background { self.background = background }
-        let base = rgb.withAlphaComponent(1)
-        let lifted = Color(nsColor: base.blended(withFraction: 0.1, of: foregroundColor) ?? base)
+        let lifted = Color(nsColor: Self.blend(chrome.withAlphaComponent(1), toward: isLight ? 0 : 1, fraction: 0.1))
         if self.lifted != lifted { self.lifted = lifted }
         let foreground = Color(nsColor: foregroundColor)
         if self.foreground != foreground { self.foreground = foreground }
@@ -217,6 +252,13 @@ struct TerminalTabSidebarView: View {
 
     static let rowSpacing = TerminalTabSidebarDrag.spacing
 
+    /// The shared left edge of the search glyph, section labels, the tray's moon and
+    /// card icons, measured from the sidebar's leading edge.
+    static let contentInset: CGFloat = 16
+    static let sectionLabelHeight: CGFloat = 22
+    /// Space above the Tabs label, on top of the pinned list's own padding.
+    static let sectionGap: CGFloat = 4
+
     private var showPinned: Bool { !model.pinnedTabs.isEmpty || drag.session?.usesPinTargets == true }
 
     var body: some View {
@@ -236,39 +278,24 @@ struct TerminalTabSidebarView: View {
                             }
                     } else {
                         if showPinned {
-                            sectionLabel(pinLabel, highlighted: drag.session?.target.section == .pinned)
+                            sectionLabel(
+                                pinLabel,
+                                count: model.pinnedTabs.count,
+                                highlighted: drag.session?.target.section == .pinned)
                             tabList(model.pinnedTabs, section: .pinned)
                                 .frame(height: shelfHeight(
                                     drag.session?.pinnedShelfCount ?? model.pinnedTabs.count,
                                     available: geometry.size.height))
-                            Divider()
-                        }
-                        if drag.session?.usesPinTargets == true {
-                            sectionLabel(unpinLabel, highlighted: drag.session?.target.section == .regular)
+                            Spacer().frame(height: Self.sectionGap)
+                            sectionLabel(
+                                unpinLabel,
+                                count: model.normalTabs.count,
+                                highlighted: drag.session?.target.section == .regular)
                         }
                         tabList(model.normalTabs, section: .regular)
                             .frame(maxHeight: .infinity)
                         if !model.snoozedTabs.isEmpty {
-                            Divider()
-                            Button {
-                                model.snoozedExpanded.toggle()
-                            } label: {
-                                HStack {
-                                    Image(systemName: model.snoozedExpanded ? "chevron.down" : "chevron.right")
-                                    Text("Snoozed · \(model.snoozedTabs.count)")
-                                    Spacer()
-                                }
-                                .font(.system(size: 11, weight: .medium))
-                                .padding(10)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(model.snoozedExpanded ? "Collapse Snoozed" : "Expand Snoozed")
-                            .accessibilityValue("\(model.snoozedTabs.count) tabs")
-                            if model.snoozedExpanded {
-                                tabList(model.snoozedTabs, section: .snoozed)
-                                    .frame(height: shelfHeight(model.snoozedTabs.count, available: geometry.size.height))
-                            }
+                            snoozedTray(available: geometry.size.height)
                         }
                     }
                 }
@@ -280,12 +307,6 @@ struct TerminalTabSidebarView: View {
         .animation(drag.animation, value: drag.session != nil)
         .foregroundColor(appearance.foreground)
         .background(appearance.background.ignoresSafeArea())
-        .overlay(alignment: .trailing) {
-            Rectangle()
-                .fill(appearance.foreground.opacity(0.08))
-                .frame(width: 1)
-                .ignoresSafeArea()
-        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Tabs")
         .onDisappear { drag.reset() }
@@ -318,20 +339,78 @@ struct TerminalTabSidebarView: View {
         return min(contentHeight, max(0, available * 0.3))
     }
 
-    private func sectionLabel(_ title: String, highlighted: Bool = false) -> some View {
-        HStack {
-            Text(title).font(.system(size: 11, weight: .medium))
-            Spacer()
-            if highlighted, drag.session?.isValid == true {
+    private func sectionLabel(_ title: String, count: Int, highlighted: Bool = false) -> some View {
+        let isDropTarget = highlighted && drag.session?.isValid == true
+        return HStack(spacing: 6) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(isDropTarget ? appearance.accent : appearance.foreground.opacity(0.48))
+            if !isDropTarget, count > 0 {
+                Text("\(count)")
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundColor(appearance.foreground.opacity(0.30))
+            }
+            Spacer(minLength: 0)
+            if isDropTarget {
                 Image(systemName: "arrow.down")
                     .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(appearance.accent)
                     .accessibilityHidden(true)
             }
         }
-        .foregroundColor(highlighted && drag.session?.isValid == true ? appearance.accent : appearance.foreground.opacity(0.6))
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .lineLimit(1)
+        .padding(.leading, Self.contentInset)
+        .padding(.trailing, 12)
+        .frame(height: Self.sectionLabelHeight)
+        .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
+    }
+
+    /// The Snoozed tray: a rounded surface holding its header and, when expanded,
+    /// its list. Rows nest one list padding inside it.
+    private func snoozedTray(available: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            Button {
+                model.snoozedExpanded.toggle()
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "moon.zzz")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(appearance.foreground.opacity(0.55))
+                        // Leading so the glyph's ink, not its slot, starts on the shared edge.
+                        .frame(width: TerminalTabSidebarRow.iconSize, alignment: .leading)
+                    HStack(spacing: 6) {
+                        Text("Snoozed")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(appearance.foreground.opacity(0.62))
+                        Text("\(model.snoozedTabs.count)")
+                            .font(.system(size: 11).monospacedDigit())
+                            .foregroundColor(appearance.foreground.opacity(0.34))
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: model.snoozedExpanded ? "chevron.down" : "chevron.up")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(appearance.foreground.opacity(0.40))
+                }
+                .lineLimit(1)
+                .padding(.horizontal, 10)
+                .frame(height: 34)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(model.snoozedExpanded ? "Collapse Snoozed" : "Expand Snoozed")
+            .accessibilityValue("\(model.snoozedTabs.count) tabs")
+
+            if model.snoozedExpanded {
+                tabList(model.snoozedTabs, section: .snoozed)
+                    .frame(height: shelfHeight(model.snoozedTabs.count, available: available))
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(appearance.foreground.opacity(0.05)))
+        .padding(.horizontal, TerminalTabSidebarDrag.padding)
+        .padding(.bottom, TerminalTabSidebarDrag.padding)
     }
 
     private func tabList(
@@ -384,6 +463,15 @@ struct TerminalTabSidebarView: View {
                         .allowsHitTesting(false)
                 }
             }
+            .mask {
+                // Without dividers, an overflowing list needs a soft edge. The shelves
+                // only scroll past their bottom; the main list scrolls both ways.
+                let isShelf = section == .pinned || section == .snoozed
+                ScrollFadeMask(
+                    contentHeight: listHeight(tabs.count, section: section) + 2 * TerminalTabSidebarDrag.padding,
+                    top: isShelf ? 0 : 10,
+                    bottom: isShelf ? 12 : 10)
+            }
             .onAppear { scroll(proxy, to: model.selectedID, animated: false) }
             .onChange(of: model.selectedID) { id in
                 if drag.session == nil { scroll(proxy, to: id, animated: true) }
@@ -420,13 +508,13 @@ struct TerminalTabSidebarView: View {
                 actions.value?.sidebarNewTab()
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.top, 8)
-        .padding(.bottom, 6)
+        .padding(.horizontal, TerminalTabSidebarDrag.padding)
+        .padding(.top, 2)
+        .padding(.bottom, 4)
     }
 
     private var searchField: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 7) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(appearance.foreground.opacity(searchFocused ? 0.6 : 0.4))
@@ -458,11 +546,14 @@ struct TerminalTabSidebarView: View {
                 .accessibilityLabel("Clear Search")
             }
         }
-        .padding(.horizontal, 8)
+        // The field starts at the list padding, so this puts the glyph on the
+        // shared content edge.
+        .padding(.leading, Self.contentInset - TerminalTabSidebarDrag.padding)
+        .padding(.trailing, 8)
         .frame(height: 26)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(appearance.foreground.opacity(searchFocused ? 0.08 : 0.055)))
+                .fill(appearance.foreground.opacity(searchFocused ? 0.09 : 0.06)))
         .overlay(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .strokeBorder(appearance.foreground.opacity(searchFocused ? 0.16 : 0), lineWidth: 1))
@@ -539,6 +630,34 @@ struct TerminalTabSidebarView: View {
             withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id) }
         } else {
             proxy.scrollTo(id)
+        }
+    }
+}
+
+/// An opaque mask that fades out the top and bottom edges of a scroll view, only
+/// while its content is taller than the viewport.
+private struct ScrollFadeMask: View {
+    let contentHeight: CGFloat
+    let top: CGFloat
+    let bottom: CGFloat
+
+    var body: some View {
+        GeometryReader { proxy in
+            if contentHeight > proxy.size.height + 0.5 {
+                VStack(spacing: 0) {
+                    if top > 0 {
+                        LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                            .frame(height: top)
+                    }
+                    Color.black
+                    if bottom > 0 {
+                        LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                            .frame(height: bottom)
+                    }
+                }
+            } else {
+                Color.black
+            }
         }
     }
 }

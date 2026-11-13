@@ -79,27 +79,42 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
         }
     }
 
+    override var paintsTitlebarBackground: Bool { true }
+
+    override func titlebarBackgroundDidChange() {
+        if #available(macOS 26.0, *) {
+            applyTitlebarBackgroundTahoe()
+        } else if let titlebarContainer {
+            titlebarContainer.wantsLayer = true
+            titlebarContainer.layer?.backgroundColor = titlebarBackgroundColor?.cgColor
+        }
+    }
+
+    /// When we have transparency, we need to set the titlebar background to match the
+    /// window background but with opacity. The window background is set using the
+    /// "preferred background color" property, or the sidebar's chrome while shown.
+    ///
+    /// Even if we aren't transparent, we still set this because this becomes the
+    /// color of the titlebar in native fullscreen view.
+    @available(macOS 26.0, *)
+    private func applyTitlebarBackgroundTahoe() {
+        guard let titlebarView = titlebarContainer?.firstDescendant(withClassName: "NSTitlebarView") else { return }
+        titlebarView.wantsLayer = true
+
+        // For glass background styles, use a transparent titlebar to let the glass effect show through
+        // Only apply this for transparent and tabs titlebar styles
+        let isGlassStyle = derivedConfig.backgroundBlur.isGlassStyle
+        let isTransparentTitlebar = derivedConfig.macosTitlebarStyle == .transparent ||
+        derivedConfig.macosTitlebarStyle == .tabs
+
+        titlebarView.layer?.backgroundColor = (isGlassStyle && isTransparentTitlebar)
+            ? NSColor.clear.cgColor
+            : titlebarBackgroundColor?.cgColor
+    }
+
     @available(macOS 26.0, *)
     private func syncAppearanceTahoe(_ surfaceConfig: Ghostty.SurfaceView.DerivedConfig) {
-        // When we have transparency, we need to set the titlebar background to match the
-        // window background but with opacity. The window background is set using the
-        // "preferred background color" property.
-        //
-        // Even if we aren't transparent, we still set this because this becomes the
-        // color of the titlebar in native fullscreen view.
-        if let titlebarView = titlebarContainer?.firstDescendant(withClassName: "NSTitlebarView") {
-            titlebarView.wantsLayer = true
-
-            // For glass background styles, use a transparent titlebar to let the glass effect show through
-            // Only apply this for transparent and tabs titlebar styles
-            let isGlassStyle = derivedConfig.backgroundBlur.isGlassStyle
-            let isTransparentTitlebar = derivedConfig.macosTitlebarStyle == .transparent ||
-            derivedConfig.macosTitlebarStyle == .tabs
-
-            titlebarView.layer?.backgroundColor = (isGlassStyle && isTransparentTitlebar)
-                ? NSColor.clear.cgColor
-                : preferredBackgroundColor?.cgColor
-        }
+        applyTitlebarBackgroundTahoe()
 
         // In all cases, we have to hide the background view since this has multiple subviews
         // that force a background color.
@@ -122,7 +137,7 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
 
         // Setup the titlebar background color to match ours
         titlebarContainer.wantsLayer = true
-        titlebarContainer.layer?.backgroundColor = preferredBackgroundColor?.cgColor
+        titlebarContainer.layer?.backgroundColor = titlebarBackgroundColor?.cgColor
 
         // See the docs for the function that sets this to true on why
         effectViewIsHidden = false

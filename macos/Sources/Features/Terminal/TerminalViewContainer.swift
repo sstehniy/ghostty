@@ -7,6 +7,14 @@ class TerminalViewContainer: NSView {
     private let terminalView = NSView()
     private let terminalHostingView: NSView
 
+    /// Draws the rounded corner and edge stroke that make the terminal read as a sheet
+    /// resting on the sidebar chrome. Pinned over the terminal content, below the sidebar.
+    private let sheetEdgeView = TerminalSheetEdgeView()
+    private var sheetEdgeMode: TerminalSheetEdgeMode = .hidden
+
+    /// The sheet edge, exposed for layout tests.
+    var sheetEdgeFrameView: NSView { sheetEdgeView }
+
     /// The optional tab sidebar placed on the leading edge, beside the terminal.
     private(set) var sidebarView: TerminalTabSidebarHostView?
     private var sidebarWidthConstraint: NSLayoutConstraint?
@@ -100,6 +108,55 @@ class TerminalViewContainer: NSView {
             terminalView.bottomAnchor.constraint(equalTo: bottomAnchor),
             terminalView.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
+
+        // The edge lives inside the terminal's parent, above the terminal content,
+        // so it inherits the terminal's slide and can never drift from it.
+        sheetEdgeView.translatesAutoresizingMaskIntoConstraints = false
+        sheetEdgeView.isHidden = true
+        terminalView.addSubview(sheetEdgeView, positioned: .above, relativeTo: terminalHostingView)
+        NSLayoutConstraint.activate([
+            sheetEdgeView.topAnchor.constraint(equalTo: terminalView.topAnchor),
+            sheetEdgeView.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor),
+            sheetEdgeView.bottomAnchor.constraint(equalTo: terminalView.bottomAnchor),
+            sheetEdgeView.trailingAnchor.constraint(equalTo: terminalView.trailingAnchor),
+        ])
+    }
+
+    /// Style the sheet edge. It shows only while the sidebar is shown.
+    ///
+    /// - Parameter contentInset: The space the terminal grid always keeps from the
+    ///   top and left edges. The corner shrinks to fit inside it so it never paints
+    ///   over a cell.
+    func updateSheetEdge(chrome: NSColor, stroke: NSColor, mode: TerminalSheetEdgeMode, contentInset: CGFloat) {
+        sheetEdgeMode = mode
+        sheetEdgeView.update(
+            chrome: chrome,
+            stroke: stroke,
+            mode: mode,
+            cornerRadius: Self.sheetCornerRadius(contentInset: contentInset))
+        updateSheetEdgeVisibility()
+    }
+
+    /// The preferred radius of the sheet's top-left corner.
+    static let preferredSheetCornerRadius: CGFloat = 10
+
+    /// The largest corner radius, up to the preferred one, whose fill stays within
+    /// `contentInset` of both edges. The fill reaches deepest along the diagonal,
+    /// `r * (1 - 1/√2)` in from each edge, so content at `contentInset` is clear when
+    /// `r <= contentInset / (1 - 1/√2)`.
+    static func sheetCornerRadius(contentInset: CGFloat) -> CGFloat {
+        let reach = 1 - 1 / CGFloat(2).squareRoot()
+        let radius = min(preferredSheetCornerRadius, max(0, contentInset) / reach)
+        // Too small to read as a corner; draw it square instead.
+        return radius < 2 ? 0 : radius
+    }
+
+    /// The current corner radius, exposed for tests.
+    var sheetCornerRadius: CGFloat { sheetEdgeView.cornerRadius }
+
+    private func updateSheetEdgeVisibility() {
+        let hidden = sheetEdgeMode == .hidden || sidebarView?.isHidden != false
+        if sheetEdgeView.isHidden != hidden { sheetEdgeView.isHidden = hidden }
     }
 
     // MARK: Sidebar
@@ -142,11 +199,14 @@ class TerminalViewContainer: NSView {
         sidebarLayoutDidChange()
         layoutSubtreeIfNeeded()
 
+        updateSheetEdgeVisibility()
+
         let animationKey = "sidebarVisibility"
         guard shouldAnimate else {
             sidebarView.layer?.removeAnimation(forKey: animationKey)
             terminalView.layer?.removeAnimation(forKey: animationKey)
             sidebarView.isHidden = !visible
+            updateSheetEdgeVisibility()
             return
         }
 
@@ -161,6 +221,7 @@ class TerminalViewContainer: NSView {
         CATransaction.setCompletionBlock { [weak self] in
             guard let self, self.sidebarTransitionID == transitionID else { return }
             sidebarView.isHidden = !sidebarView.isShown
+            self.updateSheetEdgeVisibility()
         }
         sidebarView.layer?.add(animation, forKey: animationKey)
         terminalView.layer?.add(animation, forKey: animationKey)
@@ -219,6 +280,127 @@ class TerminalViewContainer: NSView {
             updateGlassEffectIfNeeded()
         } else {
             DispatchQueue.main.async(execute: updateGlassEffectIfNeeded)
+        }
+    }
+}
+
+// MARK: Sheet Edge
+
+/// How the terminal's edge against the sidebar is drawn.
+enum TerminalSheetEdgeMode: Equatable {
+    /// A rounded top-left corner filled with chrome, and a stroke along the left
+    /// edge, the corner arc and the top edge.
+    case full
+    /// The same stroke without the corner fill, for translucent windows where a fill
+    /// would stack two translucent layers.
+    case stroke
+    /// Only a straight stroke along the left edge, for glass windows and styles whose
+    /// titlebar the system draws.
+    case leftEdge
+    case hidden
+}
+
+/// Draws the sheet corner and stroke over the terminal. The terminal's own layer is
+/// never masked: Metal surfaces live beneath it and the window background behind a
+/// clipped corner is the terminal color, so the corner is painted on top instead.
+private final class TerminalSheetEdgeView: NSView {
+    private let cornerLayer = CAShapeLayer()
+    private let strokeLayer = CAShapeLayer()
+    private var mode: TerminalSheetEdgeMode = .hidden
+    private(set) var cornerRadius: CGFloat = 0
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        for layer in [cornerLayer, strokeLayer] {
+            layer.actions = ["path": NSNull(), "fillColor": NSNull(), "strokeColor": NSNull(), "position": NSNull(), "bounds": NSNull()]
+            self.layer?.addSublayer(layer)
+        }
+        strokeLayer.fillColor = nil
+        strokeLayer.lineWidth = 1
+        setAccessibilityElement(false)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func update(chrome: NSColor, stroke: NSColor, mode: TerminalSheetEdgeMode, cornerRadius: CGFloat) {
+        self.mode = mode
+        self.cornerRadius = cornerRadius
+        cornerLayer.fillColor = chrome.cgColor
+        strokeLayer.strokeColor = stroke.cgColor
+        needsLayout = true
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        let scale = window?.backingScaleFactor ?? 2
+        cornerLayer.contentsScale = scale
+        strokeLayer.contentsScale = scale
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+
+        cornerLayer.frame = bounds
+        strokeLayer.frame = bounds
+
+        // Layer coordinates have their origin at the bottom left.
+        let width = bounds.width
+        let top = bounds.height
+        let radius = min(cornerRadius, width, top)
+        let center = CGPoint(x: radius, y: top - radius)
+
+        switch mode {
+        case .hidden:
+            cornerLayer.path = nil
+            strokeLayer.path = nil
+
+        case .leftEdge:
+            cornerLayer.path = nil
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: 0.5, y: 0))
+            path.addLine(to: CGPoint(x: 0.5, y: top))
+            strokeLayer.path = path
+
+        case .full, .stroke:
+            guard radius > 0 else {
+                // No room for a corner: a square edge along the left and top.
+                cornerLayer.path = nil
+                let path = CGMutablePath()
+                path.move(to: CGPoint(x: 0.5, y: 0))
+                path.addLine(to: CGPoint(x: 0.5, y: top - 0.5))
+                path.addLine(to: CGPoint(x: width, y: top - 0.5))
+                strokeLayer.path = path
+                return
+            }
+
+            if mode == .full {
+                // The square corner minus a quarter disc.
+                let corner = CGMutablePath()
+                corner.move(to: CGPoint(x: 0, y: top))
+                corner.addLine(to: CGPoint(x: 0, y: top - radius))
+                corner.addArc(center: center, radius: radius, startAngle: .pi, endAngle: .pi / 2, clockwise: true)
+                corner.closeSubpath()
+                cornerLayer.path = corner
+            } else {
+                cornerLayer.path = nil
+            }
+
+            // Inset half a point so the 1pt line lands on whole pixels.
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: 0.5, y: 0))
+            path.addLine(to: CGPoint(x: 0.5, y: top - radius))
+            path.addArc(center: center, radius: radius - 0.5, startAngle: .pi, endAngle: .pi / 2, clockwise: true)
+            path.addLine(to: CGPoint(x: width, y: top - 0.5))
+            strokeLayer.path = path
         }
     }
 }

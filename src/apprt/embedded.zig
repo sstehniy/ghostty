@@ -1553,6 +1553,14 @@ pub const CAPI = struct {
         cell_height_px: u32,
     };
 
+    // ghostty_surface_padding_s
+    const SurfacePadding = extern struct {
+        top_px: u32,
+        bottom_px: u32,
+        left_px: u32,
+        right_px: u32,
+    };
+
     // ghostty_clipboard_content_s
     //
     // One representation of clipboard contents. The data is binary-safe
@@ -2011,6 +2019,20 @@ pub const CAPI = struct {
             .height_px = surface.core_surface.size.screen.height,
             .cell_width_px = surface.core_surface.size.cell.width,
             .cell_height_px = surface.core_surface.size.cell.height,
+        };
+    }
+
+    /// Returns the padding currently applied around the grid, in pixels. This
+    /// is the padding in effect, not the configured value: a config reload
+    /// doesn't change it for an existing surface unless padding is balanced,
+    /// and balanced padding changes with the surface size.
+    export fn ghostty_surface_padding(surface: *Surface) SurfacePadding {
+        const padding = surface.core_surface.size.padding;
+        return .{
+            .top_px = padding.top,
+            .bottom_px = padding.bottom,
+            .left_px = padding.left,
+            .right_px = padding.right,
         };
     }
 

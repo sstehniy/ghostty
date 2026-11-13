@@ -693,6 +693,28 @@ class TerminalWindow: NSWindow {
         return derivedConfig.backgroundColor.withAlphaComponent(alpha)
     }
 
+    /// The tab sidebar's chrome tone while the sidebar is shown, so the titlebar and
+    /// sidebar read as one surface. Nil when the titlebar follows the terminal.
+    var chromeColor: NSColor? {
+        didSet {
+            guard chromeColor != oldValue else { return }
+            titlebarBackgroundDidChange()
+        }
+    }
+
+    /// The color styles that paint their own titlebar should use for it.
+    var titlebarBackgroundColor: NSColor? {
+        chromeColor ?? preferredBackgroundColor
+    }
+
+    /// Whether this style paints its titlebar with `titlebarBackgroundColor`. The
+    /// native style leaves the titlebar to the system.
+    var paintsTitlebarBackground: Bool { false }
+
+    /// Styles that paint their titlebar override this to reapply
+    /// `titlebarBackgroundColor`.
+    func titlebarBackgroundDidChange() {}
+
     func updateColorSchemeForSurfaceTree() {
         terminalController?.updateColorSchemeForSurfaceTree()
     }

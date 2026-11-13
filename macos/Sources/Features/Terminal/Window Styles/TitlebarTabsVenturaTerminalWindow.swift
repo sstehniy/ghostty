@@ -169,17 +169,25 @@ class TitlebarTabsVenturaTerminalWindow: TerminalWindow {
         isLightTheme = NSColor(surfaceConfig.backgroundColor).isLightColor
 
         // Update our titlebar color
-        if let preferredBackgroundColor {
-            titlebarColor = preferredBackgroundColor
-        } else {
-            titlebarColor = derivedConfig.backgroundColor.withAlphaComponent(derivedConfig.backgroundOpacity)
-        }
+        applyTitlebarColor()
 
         if isOpaque || themeChanged {
             // If there is transparency, calling this will make the titlebar opaque
             // so we only call this if we are opaque.
             updateTabBar()
         }
+    }
+
+    override var paintsTitlebarBackground: Bool { true }
+
+    override func titlebarBackgroundDidChange() {
+        applyTitlebarColor()
+        if isOpaque { updateTabBar() }
+    }
+
+    private func applyTitlebarColor() {
+        titlebarColor = titlebarBackgroundColor
+            ?? derivedConfig.backgroundColor.withAlphaComponent(derivedConfig.backgroundOpacity)
     }
 
     // MARK: Tab Bar Styling

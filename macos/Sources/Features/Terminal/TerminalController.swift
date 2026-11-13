@@ -78,6 +78,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// Subscriptions to the current `sidebarModel`.
     private var sidebarModelCancellables: Set<AnyCancellable> = []
 
+    /// The surface in the terminal's top-left corner, whose size is watched because
+    /// its padding bounds the sheet corner.
+    private weak var sheetCornerSurface: Ghostty.SurfaceView?
+    private var sheetCornerSurfaceCancellable: AnyCancellable?
+
     init(_ ghostty: Ghostty.App,
          withBaseConfig base: Ghostty.SurfaceConfiguration? = nil,
          withSurfaceTree tree: SplitTree<Ghostty.SurfaceView>? = nil,
@@ -210,6 +215,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         if let window = window as? TerminalWindow {
             window.surfaceIsZoomed = to.isZoomed
         }
+
+        // A different surface may now sit under the sheet corner.
+        syncSidebarChrome()
 
         // If our surface tree is now nil then we close our window.
         if to.isEmpty {
@@ -728,6 +736,61 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             backgroundColor: sidebarBackgroundColor,
             opaque: window.isOpaque,
             glass: terminalViewContainer?.glassEffectView != nil)
+        syncSidebarChrome()
+    }
+
+    /// Extend the sidebar's chrome tone into the titlebar while the sidebar is shown,
+    /// and draw the terminal as a sheet resting on it.
+    fileprivate func syncSidebarChrome() {
+        guard let sidebarHost, let window, let background = sidebarBackgroundColor else { return }
+        let glass = terminalViewContainer?.glassEffectView != nil
+        let chrome = TerminalTabSidebarAppearance.chromeColor(for: background, opaque: window.isOpaque)
+        let terminalWindow = window as? TerminalWindow
+
+        // Each tab is its own window, so each controller sets its own.
+        terminalWindow?.chromeColor = sidebarHost.isShown && !glass ? chrome : nil
+
+        let foreground: NSColor = background.withAlphaComponent(1).isLightColor ? .black : .white
+        let mode: TerminalSheetEdgeMode
+        if glass || terminalWindow?.paintsTitlebarBackground != true {
+            // Without a chrome-colored titlebar a corner would have nothing to rest on.
+            mode = .leftEdge
+        } else if chrome.alphaComponent < 1 {
+            mode = .stroke
+        } else {
+            mode = .full
+        }
+        terminalViewContainer?.updateSheetEdge(
+            chrome: chrome,
+            stroke: foreground.withAlphaComponent(glass ? 0.08 : 0.07),
+            mode: mode,
+            contentInset: sheetCornerInset())
+    }
+
+    /// The space the grid keeps from the terminal's top-left corner, from the padding
+    /// the corner surface actually applies. A config reload doesn't change an existing
+    /// surface's padding unless it is balanced, so the configured value can't be used.
+    ///
+    /// Watches that surface for every change that can rebalance its padding: its size
+    /// (window and split resizes, and display scale changes, which resend the size)
+    /// and its cell size (font changes).
+    func sheetCornerInset() -> CGFloat {
+        let surface = (surfaceTree.zoomed ?? surfaceTree.root)?.leftmostLeaf()
+        if surface !== sheetCornerSurface || sheetCornerSurfaceCancellable == nil {
+            sheetCornerSurface = surface
+            sheetCornerSurfaceCancellable = surface.map { surface in
+                Publishers.Merge(
+                    surface.$surfaceSize.dropFirst().map { _ in () },
+                    surface.$cellSize.dropFirst().map { _ in () })
+                    .sink { [weak self] in
+                        // Published fires before storing; the core already has the new padding.
+                        DispatchQueue.main.async { self?.syncSidebarChrome() }
+                    }
+            }
+        }
+        // Until the terminal starts there is no grid to protect, but no padding either.
+        guard let inset = surface?.gridTopLeftInset else { return 0 }
+        return min(inset.width, inset.height)
     }
 
     /// Adjusts the given frame for the configured window position.
@@ -2043,6 +2106,7 @@ extension TerminalController {
 
         (window as? TerminalWindow)?.hidesNativeTabBar = visible
         terminalViewContainer?.setSidebarVisible(visible, animated: true)
+        syncSidebarChrome()
 
         // Never leave keyboard focus in a hidden sidebar.
         if !visible, let window, sidebarHadFocus || window.firstResponder === window,

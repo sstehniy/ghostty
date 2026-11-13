@@ -621,6 +621,16 @@ extension Ghostty {
             }
         }
 
+        /// The space the grid currently keeps from the top and left edges of this view,
+        /// in points. This is the padding the core applied, which a config reload
+        /// doesn't change for an existing surface unless padding is balanced. It can
+        /// change whenever `surfaceSize` does. Nil until the terminal starts.
+        var gridTopLeftInset: CGSize? {
+            guard let surface else { return nil }
+            let padding = ghostty_surface_padding(surface)
+            return convertFromBacking(NSSize(width: CGFloat(padding.left_px), height: CGFloat(padding.top_px)))
+        }
+
         func setCursorShape(_ shape: ghostty_action_mouse_shape_e) {
             switch shape {
             case GHOSTTY_MOUSE_SHAPE_DEFAULT:
