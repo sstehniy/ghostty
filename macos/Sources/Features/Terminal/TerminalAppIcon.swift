@@ -384,6 +384,8 @@ struct TerminalAppIconView: View {
                         .interpolation(.high)
                         .aspectRatio(contentMode: .fit)
                 }
+            } else if icon == .terminal {
+                TerminalPromptTileIcon(foreground: foreground, size: size)
             } else {
                 Image(systemName: icon.systemSymbolName)
                     .resizable()
@@ -394,5 +396,47 @@ struct TerminalAppIconView: View {
         }
         .frame(width: size, height: size)
         .accessibilityLabel(icon.accessibilityName)
+    }
+}
+
+/// The default icon for plain terminal tabs: a soft filled squircle with a
+/// `>_` prompt inside, so shells carry the same visual weight as agent logos.
+///
+/// Geometry is authored on a 16pt grid and scaled to `size`.
+private struct TerminalPromptTileIcon: View {
+    let foreground: Color
+    let size: CGFloat
+
+    var body: some View {
+        let unit = size / 16
+        let tile = RoundedRectangle(cornerRadius: 4.2 * unit, style: .continuous)
+
+        ZStack {
+            tile.fill(foreground.opacity(0.18))
+            tile.strokeBorder(foreground.opacity(0.12), lineWidth: 0.7 * unit)
+            PromptGlyph()
+                .stroke(
+                    foreground.opacity(0.9),
+                    style: StrokeStyle(lineWidth: 1.45 * unit, lineCap: .round, lineJoin: .round))
+        }
+        .frame(width: size, height: size)
+    }
+
+    /// A `>` chevron and an underscore cursor.
+    private struct PromptGlyph: Shape {
+        func path(in rect: CGRect) -> Path {
+            let s = rect.width / 16
+            func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+                CGPoint(x: rect.minX + x * s, y: rect.minY + y * s)
+            }
+
+            var path = Path()
+            path.move(to: p(4.5, 5.3))
+            path.addLine(to: p(7.2, 8))
+            path.addLine(to: p(4.5, 10.7))
+            path.move(to: p(8.7, 10.7))
+            path.addLine(to: p(11.5, 10.7))
+            return path
+        }
     }
 }
