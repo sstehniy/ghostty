@@ -25,6 +25,9 @@ final class TerminalTabSidebarItem: ObservableObject {
     /// The keyboard shortcut label for selecting this tab (e.g. "⌘1").
     @Published var shortcut: String?
 
+    /// The modifiers of `shortcut`, used to show its hint only while they're held.
+    @Published var shortcutModifiers: NSEvent.ModifierFlags?
+
     @Published var lifecycle = TerminalTabLifecycle()
     @Published var restorationIssue: String?
 
@@ -130,6 +133,21 @@ final class TerminalTabSidebarModel: ObservableObject {
     /// The row highlighted by keyboard navigation from the search field.
     @Published var keyboardHighlightID: ObjectIdentifier?
 
+    /// The held modifiers whose tab shortcuts (e.g. "⌘1") rows currently show. Hints
+    /// only appear while a tab shortcut's modifiers are held, so they don't take
+    /// title space otherwise. Nil when no hints are shown.
+    @Published private(set) var shortcutHintModifiers: NSEvent.ModifierFlags?
+
+    /// How long the tab shortcut's modifiers must be held before hints appear, so
+    /// quick shortcuts like ⌘C never flash them.
+    static let shortcutHintDelay: TimeInterval = 0.5
+
+    /// The modifiers considered when matching tab shortcuts.
+    static let shortcutHintModifierMask: NSEvent.ModifierFlags = [.shift, .control, .option, .command]
+
+    private var pendingShortcutHintModifiers: NSEvent.ModifierFlags?
+    private var shortcutHintWorkItem: DispatchWorkItem?
+
     /// The tab group this model is bound to. Nil until bound.
     private(set) weak var tabGroup: NSWindowTabGroup?
 
@@ -173,6 +191,9 @@ final class TerminalTabSidebarModel: ObservableObject {
             name: NSNotification.Name.NSSystemClockDidChange, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(clockChanged),
             name: NSWorkspace.didWakeNotification, object: nil)
+        // The modifier release goes to another app after Cmd-Tab, so we never see it.
+        NotificationCenter.default.addObserver(self, selector: #selector(applicationDidResignActive),
+            name: NSApplication.didResignActiveNotification, object: nil)
     }
 
     /// Whether a new window group starts with the sidebar (vertical tabs).
@@ -198,9 +219,53 @@ final class TerminalTabSidebarModel: ObservableObject {
         selectionObservation?.invalidate()
         iconTimer?.invalidate()
         snoozeTimer?.invalidate()
+        shortcutHintWorkItem?.cancel()
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         Self.unregister(self)
+    }
+
+    // MARK: Shortcut Hints
+
+    /// Reports the currently held modifiers.
+    ///
+    /// From the key window, holding exactly the modifiers of some tab's shortcut shows
+    /// those tabs' hints after `shortcutHintDelay`; anything else hides them at once.
+    /// Other windows only hide hints, so a release delivered while another window is
+    /// key still clears them but can never start a hold.
+    func updateShortcutHints(held: NSEvent.ModifierFlags, fromKeyWindow: Bool) {
+        let held = held.intersection(Self.shortcutHintModifierMask)
+        let active = shortcutHintModifiers ?? pendingShortcutHintModifiers
+        guard fromKeyWindow else {
+            if let active, active != held { hideShortcutHints() }
+            return
+        }
+        guard !held.isEmpty, tabs.contains(where: { $0.item.shortcutModifiers == held }) else {
+            hideShortcutHints()
+            return
+        }
+        guard active != held else { return }
+        hideShortcutHints()
+        pendingShortcutHintModifiers = held
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.shortcutHintWorkItem = nil
+            self.pendingShortcutHintModifiers = nil
+            self.shortcutHintModifiers = held
+        }
+        shortcutHintWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.shortcutHintDelay, execute: work)
+    }
+
+    func hideShortcutHints() {
+        shortcutHintWorkItem?.cancel()
+        shortcutHintWorkItem = nil
+        pendingShortcutHintModifiers = nil
+        if shortcutHintModifiers != nil { shortcutHintModifiers = nil }
+    }
+
+    @objc private func applicationDidResignActive(_ notification: Notification) {
+        hideShortcutHints()
     }
 
     // MARK: Visibility and Width

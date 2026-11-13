@@ -955,7 +955,12 @@ class BaseTerminalController: NSWindowController,
         }
     }
 
+    /// Called for every modifier change in the app, whichever window it targets.
+    func modifierFlagsDidChange(_ event: NSEvent) {}
+
     private func localEventFlagsChanged(_ event: NSEvent) -> NSEvent? {
+        modifierFlagsDidChange(event)
+
         var surfaces = allSurfaces
 
         // If we're the main window receiving key input, then we want to avoid

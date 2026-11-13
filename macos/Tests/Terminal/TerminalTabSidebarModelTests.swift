@@ -239,6 +239,68 @@ struct TerminalTabSidebarReorderTests {
         #expect(section(80, 70, .regular, 94, 106) == .regular)
     }
 
+    @MainActor @Test func shortcutHintsAppearOnlyAfterHoldingAndHideOnRelease() async throws {
+        let defaults = TemporaryDefaults()
+        let window = makeWindow("hints")
+        let tab = item("zsh")
+        tab.shortcut = "⌘1"
+        tab.shortcutModifiers = .command
+        let model = makeModel(defaults: defaults.defaults, items: [ObjectIdentifier(window): tab])
+        model.provisionalWindow = window
+        let wait = UInt64((TerminalTabSidebarModel.shortcutHintDelay + 0.2) * 1_000_000_000)
+
+        // A quick tap never shows hints.
+        model.updateShortcutHints(held: .command, fromKeyWindow: true)
+        #expect(model.shortcutHintModifiers == nil)
+        model.updateShortcutHints(held: [], fromKeyWindow: true)
+        try await Task.sleep(nanoseconds: wait)
+        #expect(model.shortcutHintModifiers == nil)
+
+        // Holding shows them; any change away from the shortcut modifiers hides them.
+        model.updateShortcutHints(held: .command, fromKeyWindow: true)
+        try await Task.sleep(nanoseconds: wait)
+        #expect(model.shortcutHintModifiers == .command)
+        model.updateShortcutHints(held: [.command, .shift], fromKeyWindow: true)
+        #expect(model.shortcutHintModifiers == nil)
+
+        // Other windows can hide hints on release but never start a hold.
+        model.updateShortcutHints(held: .command, fromKeyWindow: false)
+        try await Task.sleep(nanoseconds: wait)
+        #expect(model.shortcutHintModifiers == nil)
+        model.updateShortcutHints(held: .command, fromKeyWindow: true)
+        try await Task.sleep(nanoseconds: wait)
+        model.updateShortcutHints(held: .command, fromKeyWindow: false)
+        #expect(model.shortcutHintModifiers == .command)
+        model.updateShortcutHints(held: [], fromKeyWindow: false)
+        #expect(model.shortcutHintModifiers == nil)
+
+        // Leaving the app clears them, since the release goes to another app.
+        model.updateShortcutHints(held: .command, fromKeyWindow: true)
+        try await Task.sleep(nanoseconds: wait)
+        NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApp)
+        #expect(model.shortcutHintModifiers == nil)
+    }
+
+    @MainActor @Test func shortcutHintsFollowEachTabsOwnModifiers() async throws {
+        let defaults = TemporaryDefaults()
+        let window = makeWindow("custom-hints")
+        let tab = item("zsh")
+        tab.shortcut = "⌃1"
+        tab.shortcutModifiers = .control
+        let model = makeModel(defaults: defaults.defaults, items: [ObjectIdentifier(window): tab])
+        model.provisionalWindow = window
+        let wait = UInt64((TerminalTabSidebarModel.shortcutHintDelay + 0.2) * 1_000_000_000)
+
+        // No tab uses Cmd, so holding it shows nothing.
+        model.updateShortcutHints(held: .command, fromKeyWindow: true)
+        try await Task.sleep(nanoseconds: wait)
+        #expect(model.shortcutHintModifiers == nil)
+
+        model.updateShortcutHints(held: .control, fromKeyWindow: true)
+        try await Task.sleep(nanoseconds: wait)
+        #expect(model.shortcutHintModifiers == .control)
+    }
+
     @MainActor @Test func keyboardHighlightMovesWithinFilteredTabs() throws {
         let defaults = TemporaryDefaults()
         let first = makeWindow("first")

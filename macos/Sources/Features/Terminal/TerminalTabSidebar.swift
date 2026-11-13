@@ -476,6 +476,7 @@ struct TerminalTabSidebarView: View {
             isKeyboardHighlighted: searchFocused && tab.id == model.keyboardHighlightID,
             isLifted: lifted,
             isReordering: drag.session != nil || lifted,
+            shortcutHintModifiers: model.shortcutHintModifiers,
             canMoveToNewWindow: model.tabs.count > 1,
             canCloseOthers: model.normalTabs.contains { $0.id != tab.id },
             canCloseToTheRight: model.navigationTabs.drop(while: { $0.id != tab.id }).dropFirst()
@@ -569,6 +570,7 @@ struct TerminalTabSidebarRow: View {
     let isKeyboardHighlighted: Bool
     let isLifted: Bool
     let isReordering: Bool
+    let shortcutHintModifiers: NSEvent.ModifierFlags?
     let canMoveToNewWindow: Bool
     let canCloseOthers: Bool
     let canCloseToTheRight: Bool
@@ -625,7 +627,6 @@ struct TerminalTabSidebarRow: View {
                     .accessibilityLabel(issue)
             }
             trailing
-                .frame(minWidth: 24, alignment: .trailing)
         }
         .padding(.leading, 10)
         .padding(.trailing, 6)
@@ -646,9 +647,23 @@ struct TerminalTabSidebarRow: View {
         .accessibilityAction(named: item.lifecycle.isPinned ? "Unpin Tab" : "Pin Tab") { perform(.pin) }
     }
 
+    /// The shortcut label while its modifiers are held long enough to show hints.
+    private var visibleShortcut: String? {
+        guard let shortcutHintModifiers, item.shortcutModifiers == shortcutHintModifiers,
+              let shortcut = item.shortcut, !shortcut.isEmpty else { return nil }
+        return shortcut
+    }
+
     @ViewBuilder
     private var trailing: some View {
-        if hovering {
+        if let shortcut = visibleShortcut {
+            Text(shortcut)
+                .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                .foregroundColor(foreground.opacity(isSelected ? 0.4 : 0.28))
+                .lineLimit(1)
+                .fixedSize()
+                .frame(minWidth: 24, alignment: .trailing)
+        } else if hovering {
             HStack(spacing: 1) {
                 TerminalTabSidebarIconButton(
                     systemName: item.lifecycle.isPinned ? "pin.slash" : "pin",
@@ -694,12 +709,7 @@ struct TerminalTabSidebarRow: View {
                 }
             }
             .fixedSize()
-        } else if let shortcut = item.shortcut, !shortcut.isEmpty {
-            Text(shortcut)
-                .font(.system(size: 10.5, weight: .medium).monospacedDigit())
-                .foregroundColor(foreground.opacity(isSelected ? 0.4 : 0.28))
-                .lineLimit(1)
-                .fixedSize()
+            .frame(minWidth: 24, alignment: .trailing)
         }
     }
 
@@ -806,6 +816,7 @@ struct TerminalTabSidebarRow: View {
             parts.append("Woke")
         }
         if let issue = item.restorationIssue { parts.append(issue) }
+        if let shortcut = item.shortcut, !shortcut.isEmpty { parts.append(shortcut) }
         return parts.joined(separator: ", ")
     }
 }

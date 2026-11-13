@@ -638,7 +638,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         tabListenForFrame = window?.tabGroup?.windows.count ?? 0 > 1
 
         if let group = window?.tabGroup {
-            for window in group.windows { (window as? TerminalWindow)?.keyEquivalent = "" }
+            for window in group.windows {
+                guard let window = window as? TerminalWindow else { continue }
+                window.keyEquivalent = ""
+                window.terminalController?.sidebarItem.shortcutModifiers = nil
+            }
             let windows = sidebarModel.navigationTabs.compactMap { $0.window as? TerminalWindow }
             for (tab, window) in zip(1..., windows) {
                 // We need to clear any windows beyond this because they have had
@@ -650,6 +654,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
                 if let equiv = ghostty.config.keyboardShortcut(for: "goto_tab:\(tab)") {
                     window.keyEquivalent = "\(equiv)"
+                    window.terminalController?.sidebarItem.shortcutModifiers =
+                        NSEvent.ModifierFlags(swiftUIFlags: equiv.modifiers)
                 } else {
                     window.keyEquivalent = ""
                 }
@@ -1346,10 +1352,34 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         self.relabelTabs()
         self.fixTabBar()
         reconnectSidebarModel()
+        // Modifiers held across a window switch never produce a flags change here.
+        sidebarModel.updateShortcutHints(held: NSEvent.modifierFlags, fromKeyWindow: true)
         // AppKit can select a tab transiently while reordering or restoring it.
         DispatchQueue.main.async { [weak self] in
             guard let self, self.window?.isKeyWindow == true else { return }
             self.resumeSavedTabIfNeeded()
+        }
+    }
+
+    override func modifierFlagsDidChange(_ event: NSEvent) {
+        super.modifierFlagsDidChange(event)
+
+        // Every tab's controller sees every modifier change, so the model decides
+        // what the key window may show and what other windows may only hide.
+        sidebarModel.updateShortcutHints(held: event.modifierFlags, fromKeyWindow: window?.isKeyWindow == true)
+    }
+
+    override func windowDidResignKey(_ notification: Notification) {
+        super.windowDidResignKey(notification)
+
+        // Switching windows (e.g. Cmd+`) doesn't change the modifiers, so the old
+        // group's hints must be hidden here. Tabs of one group share a model; once
+        // the new key window is settled, keep the hints if it's one of our tabs.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let keyController = NSApp.keyWindow?.windowController as? TerminalController
+            guard keyController?.sidebarModel !== self.sidebarModel else { return }
+            self.sidebarModel.hideShortcutHints()
         }
     }
 
