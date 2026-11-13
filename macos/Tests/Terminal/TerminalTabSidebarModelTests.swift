@@ -121,45 +121,122 @@ struct TerminalTabSidebarFilterTests {
 // MARK: Reordering
 
 struct TerminalTabSidebarReorderTests {
-    @Test func dropIndexUsesFullOrder() {
-        let full = ["a", "b", "c", "d", "e"]
+    @MainActor @Test(arguments: [
+        (false, true, 0), (false, true, 1), (false, true, 3),
+        (true, false, 0), (true, false, 1), (true, false, 3),
+        (false, false, 0), (false, false, 1), (false, false, 2),
+        (true, true, 0), (true, true, 1), (true, true, 2),
+    ])
+    func dropUsesExactSectionSlotWithoutChangingSelection(sourcePinned: Bool, targetPinned: Bool, index: Int) throws {
+        let defaults = TemporaryDefaults()
+        let windows = ["pin-a", "tab-a", "pin-b", "sleep", "tab-b", "pin-c", "tab-c"].map(makeWindow)
+        defer { windows.forEach { $0.close() } }
+        let items = windows.map { item($0.title) }
+        for pin in [0, 2, 5] { items[pin].lifecycle.pin(true) }
+        _ = items[3].lifecycle.snooze(until: .distantFuture)
+        let model = makeModel(defaults: defaults.defaults,
+            items: Dictionary(uniqueKeysWithValues: zip(windows.map(ObjectIdentifier.init), items)))
+        windows[0].orderFront(nil)
+        for (previous, next) in zip(windows, windows.dropFirst()) {
+            previous.addTabbedWindow(next, ordered: .above)
+        }
+        let group = try #require(windows[0].tabGroup)
+        model.bind(to: group)
+        group.selectedWindow = windows[6]
+        let selected = group.selectedWindow
+        let source = sourcePinned ? model.pinnedTabs[1] : model.normalTabs[1]
+        var expectedPins = model.pinnedTabs.map(\.id).filter { $0 != source.id }
+        var expectedRegular = model.normalTabs.map(\.id).filter { $0 != source.id }
+        if targetPinned { expectedPins.insert(source.id, at: index) } else { expectedRegular.insert(source.id, at: index) }
 
-        // Search shows only "b" and "e"; dropping onto "e" lands at e's full index,
-        // not at the filtered index 1.
-        #expect(TerminalTabSidebarModel.fullOrderIndex(forDropOnto: "e", in: full) == 4)
-        #expect(TerminalTabSidebarModel.fullOrderIndex(forDropOnto: "b", in: full) == 1)
-        #expect(TerminalTabSidebarModel.fullOrderIndex(forDropOnto: "z", in: full) == nil)
+        model.move(source, to: targetPinned ? .pinned : .regular, at: index)
+
+        #expect(model.pinnedTabs.map(\.id) == expectedPins)
+        #expect(model.normalTabs.map(\.id) == expectedRegular)
+        #expect(source.item.lifecycle.isPinned == targetPinned)
+        #expect(model.snoozedTabs.map(\.id) == [ObjectIdentifier(windows[3])])
+        #expect(group.selectedWindow === selected)
     }
 
-    @Test func dropAfterLastVisibleRow() {
-        let full = ["a", "b", "c", "d", "e"]
-        #expect(TerminalTabSidebarModel.fullOrderIndex(forDropAfterLastOf: ["a", "c"], in: full) == 2)
-        #expect(TerminalTabSidebarModel.fullOrderIndex(forDropAfterLastOf: [String](), in: full) == nil)
+    @MainActor @Test func singleTabCanEnterAndLeaveAnEmptyPinnedSection() throws {
+        let defaults = TemporaryDefaults()
+        let window = makeWindow("only")
+        defer { window.close() }
+        let tabItem = item("only")
+        let model = makeModel(defaults: defaults.defaults, items: [ObjectIdentifier(window): tabItem])
+        model.provisionalWindow = window
+        let tab = try #require(model.tabs.first)
+
+        model.move(tab, to: .pinned, at: 0)
+        #expect(model.pinnedTabs.map(\.id) == [tab.id])
+        #expect(model.normalTabs.isEmpty)
+        model.move(tab, to: .regular, at: 0)
+        #expect(model.pinnedTabs.isEmpty)
+        #expect(model.normalTabs.map(\.id) == [tab.id])
+
+        model.move(tab, to: .pinned, at: 1)
+        #expect(!tabItem.lifecycle.isPinned)
+        model.snooze(tab, until: .distantFuture)
+        model.move(tab, to: .pinned, at: 0)
+        #expect(tabItem.lifecycle.isSnoozed)
+        #expect(!tabItem.lifecycle.isPinned)
     }
 
-    @Test func reorderTargetFollowsDragDistance() {
-        let step = TerminalTabSidebarRow.height + TerminalTabSidebarView.rowSpacing
-        // Less than half a row stays put; past half a row moves one slot.
-        #expect(TerminalTabSidebarView.targetIndex(from: 1, offset: step * 0.4, count: 5) == 1)
-        #expect(TerminalTabSidebarView.targetIndex(from: 1, offset: step * 0.6, count: 5) == 2)
-        #expect(TerminalTabSidebarView.targetIndex(from: 1, offset: step * 3, count: 5) == 4)
-        #expect(TerminalTabSidebarView.targetIndex(from: 3, offset: -step * 2, count: 5) == 1)
-        // Clamped to the list.
-        #expect(TerminalTabSidebarView.targetIndex(from: 1, offset: step * 10, count: 5) == 4)
-        #expect(TerminalTabSidebarView.targetIndex(from: 1, offset: -step * 10, count: 5) == 0)
+    @MainActor @Test func snoozedReorderingDoesNotWakeOrPinTabs() throws {
+        let defaults = TemporaryDefaults()
+        let windows = ["sleep-a", "sleep-b"].map(makeWindow)
+        defer { windows.forEach { $0.close() } }
+        let items = windows.map { item($0.title) }
+        for item in items { _ = item.lifecycle.snooze(until: .distantFuture) }
+        let model = makeModel(defaults: defaults.defaults,
+            items: Dictionary(uniqueKeysWithValues: zip(windows.map(ObjectIdentifier.init), items)))
+        windows[0].orderFront(nil)
+        windows[0].addTabbedWindow(windows[1], ordered: .above)
+        model.bind(to: try #require(windows[0].tabGroup))
+
+        model.move(model.snoozedTabs[1], to: .snoozed, at: 0)
+
+        #expect(model.snoozedTabs.map(\.id) == windows.reversed().map(ObjectIdentifier.init))
+        #expect(items.allSatisfy { $0.lifecycle.isSnoozed && !$0.lifecycle.isPinned })
+        #expect(model.navigationTabs.isEmpty)
     }
 
-    @Test func reorderDisplacesRowsBetweenStartAndTarget() {
-        // Dragging row 1 down to 3: rows 2 and 3 move up a slot.
-        let down = (0..<5).map { TerminalTabSidebarView.displacement(ofRowAt: $0, start: 1, target: 3) }
-        #expect(down == [0, 0, -1, -1, 0])
+    @MainActor @Test(arguments: [
+        (0, TerminalTabSidebarDrag.Section.regular, TerminalTabSidebarDrag.Section.regular, 1),
+        (0, .regular, .pinned, 1),
+        (1, .regular, .pinned, 2),
+        (3, .regular, .pinned, 4),
+        (1, .pinned, .regular, 1),
+        (3, .pinned, .regular, 3),
+        (3, .pinned, .pinned, 3),
+    ])
+    func pinnedShelfFitsThePreviewWithoutCollapsingTheSource(
+        pins: Int, source: TerminalTabSidebarDrag.Section, target: TerminalTabSidebarDrag.Section, expected: Int
+    ) {
+        let window = makeWindow("preview")
+        defer { window.close() }
+        let session = TerminalTabSidebarDrag.Session(
+            tab: .init(window: window, item: item("preview")), source: .init(section: source, index: 0),
+            counts: [.pinned: pins, .regular: 1], grabOffset: .zero, activationY: 0,
+            target: .init(section: target, index: 0))
+        #expect(session.pinnedShelfCount == expected)
+    }
 
-        // Dragging row 3 up to 1: rows 1 and 2 move down a slot.
-        let up = (0..<5).map { TerminalTabSidebarView.displacement(ofRowAt: $0, start: 3, target: 1) }
-        #expect(up == [0, 1, 1, 0, 0])
+    @Test func insertionSlotsClampToTheSectionAndIncludeItsEnd() {
+        #expect(TerminalTabSidebarDrag.insertionIndex(center: -100, contentTop: 20, count: 3) == 0)
+        #expect(TerminalTabSidebarDrag.insertionIndex(center: 100, contentTop: 20, count: 3) == 1)
+        #expect(TerminalTabSidebarDrag.insertionIndex(center: 500, contentTop: 20, count: 3) == 3)
+        #expect(TerminalTabSidebarDrag.insertionIndex(center: 100, contentTop: 20, count: 0) == 0)
+    }
 
-        let none = (0..<5).map { TerminalTabSidebarView.displacement(ofRowAt: $0, start: 2, target: 2) }
-        #expect(none == [0, 0, 0, 0, 0])
+    @Test func sectionBoundaryResistsJitterAndOnlyCrossesInTheDragDirection() {
+        let section = TerminalTabSidebarDrag.section
+        #expect(section(99, 101, .regular, 94, 106) == .regular)
+        #expect(section(93, 99, .regular, 94, 106) == .pinned)
+        #expect(section(101, 93, .pinned, 94, 106) == .pinned)
+        #expect(section(107, 101, .pinned, 94, 106) == .regular)
+        #expect(section(80, 80, .regular, 94, 106) == .regular)
+        #expect(section(80, 70, .regular, 94, 106) == .regular)
     }
 
     @MainActor @Test func keyboardHighlightMovesWithinFilteredTabs() throws {

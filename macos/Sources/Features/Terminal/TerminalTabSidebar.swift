@@ -13,7 +13,7 @@ protocol TerminalTabSidebarActions: AnyObject {
     func sidebarRename(_ window: NSWindow)
     func sidebarSetColor(_ color: TerminalTabColor, for window: NSWindow)
     func sidebarMoveToNewWindow(_ window: NSWindow)
-    func sidebarMove(_ window: NSWindow, toIndex index: Int)
+    func sidebarMove(_ window: NSWindow, to section: TerminalTabSidebarDrag.Section, at index: Int)
     func sidebarFocusTerminal()
     func sidebarSetPinned(_ pinned: Bool, for window: NSWindow)
     func sidebarSnooze(_ window: NSWindow, until: Date)
@@ -212,29 +212,12 @@ struct TerminalTabSidebarView: View {
 
     @State private var searchFocused = false
 
-    /// The in-progress reorder. Rows other than the dragged one animate aside
-    /// when its target changes.
-    @State private var reorder: Reorder?
+    @StateObject private var drag = TerminalTabSidebarDrag()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// The dragged row's vertical offset. Kept apart from `reorder` so it follows
-    /// the pointer without animation.
-    @State private var dragOffset: CGFloat = 0
+    static let rowSpacing = TerminalTabSidebarDrag.spacing
 
-    private struct Reorder: Equatable {
-        let id: ObjectIdentifier
-        let startIndex: Int
-        var targetIndex: Int
-
-        /// Set once the row is released. The rows keep their offsets until the tab
-        /// group reports the new order.
-        var committed = false
-    }
-
-    static let rowSpacing: CGFloat = 4
-    private static let listVerticalPadding: CGFloat = 6
-    private static let rowStep = TerminalTabSidebarRow.height + rowSpacing
-    private static let settleDuration: TimeInterval = 0.16
-    private static let settleAnimation = Animation.easeOut(duration: settleDuration)
+    private var showPinned: Bool { !model.pinnedTabs.isEmpty || drag.session?.usesPinTargets == true }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -252,13 +235,18 @@ struct TerminalTabSidebarView: View {
                                 }
                             }
                     } else {
-                        if !model.pinnedTabs.isEmpty {
-                            sectionLabel("Pinned")
-                            tabList(model.pinnedTabs)
-                                .frame(height: shelfHeight(model.pinnedTabs.count, available: geometry.size.height))
+                        if showPinned {
+                            sectionLabel(pinLabel, highlighted: drag.session?.target.section == .pinned)
+                            tabList(model.pinnedTabs, section: .pinned)
+                                .frame(height: shelfHeight(
+                                    drag.session?.pinnedShelfCount ?? model.pinnedTabs.count,
+                                    available: geometry.size.height))
                             Divider()
                         }
-                        tabList(model.normalTabs)
+                        if drag.session?.usesPinTargets == true {
+                            sectionLabel(unpinLabel, highlighted: drag.session?.target.section == .regular)
+                        }
+                        tabList(model.normalTabs, section: .regular)
                             .frame(maxHeight: .infinity)
                         if !model.snoozedTabs.isEmpty {
                             Divider()
@@ -278,7 +266,7 @@ struct TerminalTabSidebarView: View {
                             .accessibilityLabel(model.snoozedExpanded ? "Collapse Snoozed" : "Expand Snoozed")
                             .accessibilityValue("\(model.snoozedTabs.count) tabs")
                             if model.snoozedExpanded {
-                                tabList(model.snoozedTabs)
+                                tabList(model.snoozedTabs, section: .snoozed)
                                     .frame(height: shelfHeight(model.snoozedTabs.count, available: geometry.size.height))
                             }
                         }
@@ -286,6 +274,10 @@ struct TerminalTabSidebarView: View {
                 }
             }
         }
+        .coordinateSpace(name: "tab-sidebar")
+        .background(TerminalTabSidebarDragAnchor(drag: drag, reduceMotion: reduceMotion).allowsHitTesting(false))
+        .animation(drag.animation, value: showPinned)
+        .animation(drag.animation, value: drag.session != nil)
         .foregroundColor(appearance.foreground)
         .background(appearance.background.ignoresSafeArea())
         .overlay(alignment: .trailing) {
@@ -296,43 +288,124 @@ struct TerminalTabSidebarView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Tabs")
+        .onDisappear { drag.reset() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            drag.reset()
+        }
+        .onChange(of: model.navigationTabs.map(\.id)) { _ in
+            if drag.session?.settling == false { drag.cancel() }
+        }
+        .onChange(of: model.tabs.map(\.id)) { _ in
+            if drag.session?.settling == false { drag.cancel() }
+        }
+        .onChange(of: model.isSearching) { _ in drag.cancel() }
+    }
+
+    private var pinLabel: String {
+        guard let session = drag.session else { return "Pinned" }
+        if session.target.section == .pinned, session.source.section == .regular { return "Pin on drop" }
+        return model.pinnedTabs.isEmpty ? "Drop to pin" : "Pinned"
+    }
+
+    private var unpinLabel: String {
+        guard let session = drag.session else { return "Tabs" }
+        if session.target.section == .regular, session.source.section == .pinned { return "Unpin on drop" }
+        return "Tabs"
     }
 
     private func shelfHeight(_ count: Int, available: CGFloat) -> CGFloat {
-        let contentHeight = CGFloat(count) * Self.rowStep - Self.rowSpacing + 2 * Self.listVerticalPadding
+        let contentHeight = CGFloat(count) * TerminalTabSidebarDrag.step - Self.rowSpacing + 2 * TerminalTabSidebarDrag.padding
         return min(contentHeight, max(0, available * 0.3))
     }
 
-    private func sectionLabel(_ title: String) -> some View {
+    private func sectionLabel(_ title: String, highlighted: Bool = false) -> some View {
         HStack {
             Text(title).font(.system(size: 11, weight: .medium))
             Spacer()
+            if highlighted, drag.session?.isValid == true {
+                Image(systemName: "arrow.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .accessibilityHidden(true)
+            }
         }
+        .foregroundColor(highlighted && drag.session?.isValid == true ? appearance.accent : appearance.foreground.opacity(0.6))
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .accessibilityAddTraits(.isHeader)
     }
 
-    private func tabList(_ tabs: [TerminalTabSidebarModel.Tab]) -> some View {
+    private func tabList(
+        _ tabs: [TerminalTabSidebarModel.Tab],
+        section: TerminalTabSidebarDrag.Section? = nil
+    ) -> some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical) {
                 VStack(spacing: Self.rowSpacing) {
                     ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
                         row(tab)
-                            .offset(y: tabs.contains(where: { $0.id == reorder?.id }) ? offset(for: tab.id, at: index) : 0)
-                            .zIndex(reorder?.id == tab.id ? 1 : 0)
-                            .gesture(reorderGesture(for: tab, at: index, in: tabs))
+                            .opacity(drag.session?.tab.id == tab.id ? 0 : 1)
+                            .animation(nil, value: drag.session?.tab.id)
+                            .offset(y: rowOffset(tab, at: index, section: section) - CGFloat(index) * TerminalTabSidebarDrag.step)
+                            .animation(drag.session == nil ? nil : drag.animation, value: drag.session?.target)
+                            .transition(.identity)
+                            .gesture(dragGesture(for: tab, at: index, section: section))
                             .id(tab.id)
                     }
                 }
-                .padding(.horizontal, 6)
-                .padding(.vertical, Self.listVerticalPadding)
+                .overlay(alignment: .topLeading) {
+                    if let session = drag.session, session.target.section == section,
+                       session.isValid || session.settling {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(appearance.accent.opacity(0.045))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .strokeBorder(appearance.accent.opacity(0.22), lineWidth: 1)
+                            }
+                            .frame(height: TerminalTabSidebarRow.height)
+                            .offset(y: CGFloat(session.target.index) * TerminalTabSidebarDrag.step)
+                            .animation(drag.animation, value: session.target)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: listHeight(tabs.count, section: section), alignment: .topLeading)
+                .padding(TerminalTabSidebarDrag.padding)
+                .background {
+                    if let section {
+                        TerminalTabSidebarDragAnchor(drag: drag, section: section, content: true)
+                            .allowsHitTesting(false)
+                    }
+                }
+            }
+            .background {
+                if let section {
+                    TerminalTabSidebarDragAnchor(drag: drag, section: section)
+                        .allowsHitTesting(false)
+                }
             }
             .onAppear { scroll(proxy, to: model.selectedID, animated: false) }
-            .onChange(of: model.selectedID) { id in scroll(proxy, to: id, animated: true) }
+            .onChange(of: model.selectedID) { id in
+                if drag.session == nil { scroll(proxy, to: id, animated: true) }
+            }
             .onChange(of: model.keyboardHighlightID) { id in scroll(proxy, to: id, animated: true) }
-            .onChange(of: model.tabs.map(\.id)) { _ in tabOrderDidChange() }
         }
+    }
+
+    private func rowOffset(
+        _ tab: TerminalTabSidebarModel.Tab, at index: Int, section: TerminalTabSidebarDrag.Section?
+    ) -> CGFloat {
+        guard let section, let session = drag.session else { return CGFloat(index) * TerminalTabSidebarDrag.step }
+        if tab.id == session.tab.id, section == session.target.section {
+            return CGFloat(session.target.index) * TerminalTabSidebarDrag.step
+        }
+        return CGFloat(session.projectedIndex(index, in: section)) * TerminalTabSidebarDrag.step
+    }
+
+    private func listHeight(_ count: Int, section: TerminalTabSidebarDrag.Section?) -> CGFloat {
+        var count = count
+        if let section, let session = drag.session { count = session.count(in: section) }
+        return max(0, CGFloat(count) * TerminalTabSidebarDrag.step - Self.rowSpacing)
     }
 
     private var header: some View {
@@ -396,13 +469,13 @@ struct TerminalTabSidebarView: View {
         .animation(.easeOut(duration: 0.12), value: searchFocused)
     }
 
-    private func row(_ tab: TerminalTabSidebarModel.Tab) -> some View {
+    private func row(_ tab: TerminalTabSidebarModel.Tab, lifted: Bool = false) -> some View {
         TerminalTabSidebarRow(
             item: tab.item,
             isSelected: tab.id == model.selectedID,
             isKeyboardHighlighted: searchFocused && tab.id == model.keyboardHighlightID,
-            isLifted: reorder?.id == tab.id && reorder?.committed == false,
-            isReordering: reorder != nil,
+            isLifted: lifted,
+            isReordering: drag.session != nil || lifted,
             canMoveToNewWindow: model.tabs.count > 1,
             canCloseOthers: model.normalTabs.contains { $0.id != tab.id },
             canCloseToTheRight: model.navigationTabs.drop(while: { $0.id != tab.id }).dropFirst()
@@ -415,112 +488,23 @@ struct TerminalTabSidebarView: View {
 
     // MARK: Reordering
 
-    /// Rows are reordered with a plain drag gesture rather than system drag and
-    /// drop. That keeps the row live under the pointer and avoids the drag image
-    /// lingering after the drop.
-    private func reorderGesture(
+    private func dragGesture(
         for tab: TerminalTabSidebarModel.Tab,
         at index: Int,
-        in visibleTabs: [TerminalTabSidebarModel.Tab]
+        section: TerminalTabSidebarDrag.Section?
     ) -> some Gesture {
-        DragGesture(minimumDistance: 4)
+        DragGesture(minimumDistance: 4, coordinateSpace: .named("tab-sidebar"))
             .onChanged { value in
-                guard visibleTabs.count > 1, !model.isSearching else { return }
-                let current = reorder ?? Reorder(id: tab.id, startIndex: index, targetIndex: index)
-                guard current.id == tab.id, !current.committed else { return }
-
-                dragOffset = value.translation.height
-                let target = Self.targetIndex(
-                    from: current.startIndex,
-                    offset: value.translation.height,
-                    count: visibleTabs.count)
-                if reorder == nil {
-                    reorder = current
-                }
-                if target != current.targetIndex {
-                    withAnimation(Self.settleAnimation) {
-                        reorder?.targetIndex = target
+                guard let section, !model.isSearching else { return }
+                drag.begin(tab: tab, source: .init(section: section, index: index),
+                    counts: [.pinned: model.pinnedTabs.count, .regular: model.normalTabs.count,
+                             .snoozed: model.snoozedTabs.count], gesture: value,
+                    preview: AnyView(row(tab, lifted: true))) { target in
+                        guard let window = tab.window else { return }
+                        actions.value?.sidebarMove(window, to: target.section, at: target.index)
                     }
-                }
             }
-            .onEnded { _ in
-                guard let current = reorder, current.id == tab.id, !current.committed else { return }
-                finishReorder(current, in: visibleTabs)
-            }
-    }
-
-    private func finishReorder(_ current: Reorder, in visibleTabs: [TerminalTabSidebarModel.Tab]) {
-        let start = current.startIndex
-        let target = current.targetIndex
-        guard start != target,
-              visibleTabs.indices.contains(start),
-              visibleTabs.indices.contains(target),
-              let window = visibleTabs[start].window,
-              let index = TerminalTabSidebarModel.fullOrderIndex(
-                forDropOnto: visibleTabs[target].id,
-                in: model.tabs.map(\.id))
-        else {
-            withAnimation(Self.settleAnimation) { cancelReorder() }
-            return
-        }
-
-        // Ease the dragged row into its slot using offsets only. The list order
-        // stays the same until the move happens, so nothing reflows mid-animation.
-        withAnimation(Self.settleAnimation) {
-            reorder?.committed = true
-            dragOffset = CGFloat(target - start) * Self.rowStep
-        }
-
-        let id = current.id
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.settleDuration) {
-            guard reorder?.id == id, reorder?.committed == true else { return }
-            actions.value?.sidebarMove(window, toIndex: index)
-
-            // If the move didn't happen, put the rows back.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                guard reorder?.id == id, reorder?.committed == true else { return }
-                withAnimation(Self.settleAnimation) { cancelReorder() }
-            }
-        }
-    }
-
-    /// The tab group reported a new order. Once a released row is waiting for it,
-    /// the new order puts every row exactly where its offset already shows it, so
-    /// clearing the offsets without animation is invisible.
-    private func tabOrderDidChange() {
-        guard reorder?.committed == true else { return }
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { cancelReorder() }
-    }
-
-    private func cancelReorder() {
-        reorder = nil
-        dragOffset = 0
-    }
-
-    private func offset(for id: ObjectIdentifier, at index: Int) -> CGFloat {
-        guard let reorder else { return 0 }
-        if reorder.id == id { return dragOffset }
-        return Self.displacement(
-            ofRowAt: index,
-            start: reorder.startIndex,
-            target: reorder.targetIndex) * Self.rowStep
-    }
-
-    /// The target slot for a row dragged `offset` points from `start`.
-    static func targetIndex(from start: Int, offset: CGFloat, count: Int) -> Int {
-        guard count > 0 else { return 0 }
-        let moved = Int((offset / rowStep).rounded())
-        return min(max(start + moved, 0), count - 1)
-    }
-
-    /// How many slots a row moves to make room while another row is dragged from
-    /// `start` to `target`: -1 (up), 0, or 1 (down).
-    static func displacement(ofRowAt index: Int, start: Int, target: Int) -> CGFloat {
-        if start < target, index > start, index <= target { return -1 }
-        if target < start, index >= target, index < start { return 1 }
-        return 0
+            .onEnded { value in drag.end(at: value.location) }
     }
 
     private func perform(_ action: TerminalTabSidebarRow.Action, on tab: TerminalTabSidebarModel.Tab) {
@@ -578,6 +562,7 @@ struct TerminalTabSidebarRow: View {
     static let height: CGFloat = 44
     static let iconSize: CGFloat = 16
     private static let hoverButtonSize: CGFloat = 18
+    static let trailingControlsWidth = 3 * hoverButtonSize + 2
 
     @ObservedObject var item: TerminalTabSidebarItem
     let isSelected: Bool

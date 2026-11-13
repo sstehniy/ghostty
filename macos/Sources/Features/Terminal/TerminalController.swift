@@ -2151,13 +2151,10 @@ extension TerminalController: TerminalTabSidebarActions {
         window.makeKeyAndOrderFront(nil)
     }
 
-    func sidebarMove(_ window: NSWindow, toIndex index: Int) {
-        Self.moveTab(window, to: index)
-        DispatchQueue.main.async { [weak self] in
-            self?.relabelTabs()
-            self?.sidebarModel.refresh()
-            TerminalSavedTabs.shared.save()
-        }
+    func sidebarMove(_ window: NSWindow, to section: TerminalTabSidebarDrag.Section, at index: Int) {
+        guard let tab = sidebarModel.tabs.first(where: { $0.window === window }) else { return }
+        sidebarModel.move(tab, to: section, at: index)
+        relabelTabs()
     }
 
     func sidebarSetPinned(_ pinned: Bool, for window: NSWindow) {

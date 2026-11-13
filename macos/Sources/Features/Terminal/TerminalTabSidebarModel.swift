@@ -442,18 +442,36 @@ final class TerminalTabSidebarModel: ObservableObject {
 
     // MARK: Reordering
 
-    /// The index in the full tab order at which a tab dropped onto `targetID` should
-    /// land. Search filtering never changes tab numbering: the drop target is always
-    /// resolved against the complete tab order.
-    static func fullOrderIndex<ID: Equatable>(forDropOnto targetID: ID, in fullOrder: [ID]) -> Int? {
-        fullOrder.firstIndex(of: targetID)
-    }
+    /// Resolve a section-local insertion slot against the native order after removing the source.
+    func move(_ tab: Tab, to section: TerminalTabSidebarDrag.Section, at index: Int) {
+        guard let window = tab.window, tabs.contains(where: { $0.id == tab.id }),
+              tab.item.lifecycle.isSnoozed == (section == .snoozed) else { return }
+        let sectionTabs: [Tab]
+        switch section {
+        case .pinned: sectionTabs = pinnedTabs
+        case .regular: sectionTabs = normalTabs
+        case .snoozed: sectionTabs = snoozedTabs
+        }
+        let destination = sectionTabs.filter { $0.id != tab.id }
+        guard (0...destination.count).contains(index) else { return }
+        let remaining = tabs.filter { $0.id != tab.id }
+        let fullIndex: Int
+        if index < destination.count,
+           let before = remaining.firstIndex(where: { $0.id == destination[index].id }) {
+            fullIndex = before
+        } else if let last = destination.last,
+                  let after = remaining.firstIndex(where: { $0.id == last.id }) {
+            fullIndex = after + 1
+        } else {
+            fullIndex = section == .pinned ? 0 : remaining.count
+        }
 
-    /// The index for a drop past the last visible row: the position of the last
-    /// visible tab in the full order.
-    static func fullOrderIndex<ID: Equatable>(forDropAfterLastOf visibleOrder: [ID], in fullOrder: [ID]) -> Int? {
-        guard let last = visibleOrder.last else { return nil }
-        return fullOrder.firstIndex(of: last)
+        TerminalController.moveTab(window, to: fullIndex)
+        if section != .snoozed, tab.item.lifecycle.isPinned != (section == .pinned) {
+            tab.item.lifecycle.pin(section == .pinned)
+        }
+        refresh()
+        lifecycleDidChange()
     }
 
     // MARK: Icons
