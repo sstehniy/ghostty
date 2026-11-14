@@ -87,4 +87,25 @@ struct TerminalTabSidebarAppearanceTests {
         window.chromeColor = nil
         #expect(window.titlebarSeparatorStyle == .automatic)
     }
+
+    /// AppKit shows the titlebar background again after the tab bar is shown and
+    /// hidden, which draws a line under the titlebar. Hiding it must be repeatable.
+    @MainActor @Test func titlebarBackgroundIsHiddenAgainAfterAppKitRestoresIt() throws {
+        let window = TransparentTitlebarTerminalWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let background = try #require(
+            window.titlebarContainer?.firstDescendant(withClassName: "NSTitlebarBackgroundView"))
+
+        window.hideTitlebarBackground()
+        #expect(background.isHidden)
+
+        background.isHidden = false
+        window.hideTitlebarBackground()
+        #expect(background.isHidden)
+    }
 }

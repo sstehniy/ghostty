@@ -154,8 +154,11 @@ class TerminalViewContainer: NSView {
     /// The current corner radius, exposed for tests.
     var sheetCornerRadius: CGFloat { sheetEdgeView.cornerRadius }
 
+    /// The edge follows the requested sidebar state, not the slide: the titlebar drops
+    /// the chrome tone as soon as the sidebar starts collapsing, and an edge left
+    /// until the slide ends would read as a separator under it.
     private func updateSheetEdgeVisibility() {
-        let hidden = sheetEdgeMode == .hidden || sidebarView?.isHidden != false
+        let hidden = sheetEdgeMode == .hidden || sidebarView?.isShown != true
         if sheetEdgeView.isHidden != hidden { sheetEdgeView.isHidden = hidden }
     }
 

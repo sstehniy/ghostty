@@ -53,6 +53,11 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
             if !effectViewIsHidden {
                 hideEffectView()
             }
+        } else if lastSurfaceConfig != nil {
+            // AppKit shows the titlebar background again when the tab bar is shown
+            // and hidden (collapsing and reopening the tab sidebar), which draws a
+            // line under the titlebar. No appearance sync is guaranteed to follow.
+            hideTitlebarBackground()
         }
     }
 
@@ -88,6 +93,14 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
         syncTitlebarSeparator()
         if #available(macOS 26.0, *) {
             applyTitlebarBackgroundTahoe()
+
+            // This follows a sidebar toggle, which shows or hides the tab bar. AppKit
+            // can bring the titlebar background back then or during the next layout;
+            // `update` also catches it, but only once another event arrives.
+            if lastSurfaceConfig != nil {
+                hideTitlebarBackground()
+                DispatchQueue.main.async { [weak self] in self?.hideTitlebarBackground() }
+            }
         } else if let titlebarContainer {
             titlebarContainer.wantsLayer = true
             titlebarContainer.layer?.backgroundColor = titlebarBackgroundColor?.cgColor
@@ -133,7 +146,7 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
 
         // In all cases, we have to hide the background view since this has multiple subviews
         // that force a background color.
-        titlebarBackgroundView?.isHidden = true
+        hideTitlebarBackground()
 
         if #available(macOS 27.0, *) {
             // Add some delay to cover the cases where:
@@ -167,6 +180,21 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
     }
 
     // MARK: View Finders
+
+    /// The last background view found, so `update` doesn't search the titlebar on
+    /// every pass. AppKit replaces the view at times, which drops it from the window.
+    private weak var knownTitlebarBackgroundView: NSView?
+
+    /// Hide the titlebar background, which has multiple subviews that force a
+    /// background color and an edge line. Cheap to call repeatedly.
+    func hideTitlebarBackground() {
+        if knownTitlebarBackgroundView?.window == nil {
+            knownTitlebarBackgroundView = titlebarBackgroundView
+        }
+        if let view = knownTitlebarBackgroundView, !view.isHidden {
+            view.isHidden = true
+        }
+    }
 
     private var titlebarBackgroundView: NSView? {
         titlebarContainer?.firstDescendant(withClassName: "NSTitlebarBackgroundView")
